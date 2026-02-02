@@ -1,0 +1,85 @@
+cabal-version: 2.4
+name:          saywayland
+version:       0.0.0
+license:       GPL-3.0-or-later
+license-file:  LICENSE.txt
+author:        saygo-png
+maintainer:    saygo-png <saygo.mail@proton.me>
+category:      Graphics
+synopsis:      Generic, simple Wayland library without C bindings
+homepage:      https://github.com/saygo-png/saywayland
+bug-reports:   https://github.com/saygo-png/saywayland/issues
+description:
+  Saywayland is a WIP, simple Wayland library that doesn't use C bindings.
+  Neither does it provide abstractions, it's a fairly raw and incomplete implementation of some
+  Wayland protocols.
+
+common common-options
+  build-depends:
+    , base    >=4.7 && <5
+    , relude
+
+  default-language:   GHC2021
+  ghc-options:
+    -Weverything -Wno-missed-extra-shared-lib
+    -Wno-missing-kind-signatures -Wno-safe -Wno-unsafe
+    -Wno-missing-import-lists -Wno-all-missed-specialisations
+    -Wno-missed-specialisations -Wno-missing-safe-haskell-mode
+    -Wno-missing-exported-signatures -Wno-missing-local-signatures
+    -threaded
+
+  default-extensions:
+    BangPatterns
+    BinaryLiterals
+    ConstraintKinds
+    DataKinds
+    DefaultSignatures
+    DeriveDataTypeable
+    DeriveFoldable
+    DeriveFunctor
+    DeriveGeneric
+    DeriveTraversable
+    DerivingStrategies
+    DoAndIfThenElse
+    DuplicateRecordFields
+    EmptyDataDecls
+    ExistentialQuantification
+    FlexibleContexts
+    FlexibleInstances
+    FunctionalDependencies
+    GADTs
+    GeneralizedNewtypeDeriving
+    InstanceSigs
+    KindSignatures
+    LambdaCase
+    MultiParamTypeClasses
+    MultiWayIf
+    NamedFieldPuns
+    NoFieldSelectors
+    NoImplicitPrelude
+    OverloadedRecordDot
+    OverloadedStrings
+    PartialTypeSignatures
+    PatternGuards
+    PolyKinds
+    RankNTypes
+    RoleAnnotations
+    ScopedTypeVariables
+    StandaloneDeriving
+    TupleSections
+    TypeFamilies
+    TypeSynonymInstances
+    ViewPatterns
+
+library
+  import:          common-options
+  build-depends:
+    , ansi-terminal
+    , binary
+    , bytestring
+    , containers
+    , network
+    , template-haskell
+
+  hs-source-dirs:  lib
+  exposed-modules: Saywayland, SaywaylandTH

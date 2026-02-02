@@ -1,0 +1,27 @@
+= saywayland
+
+Simple Wayland client library for Haskell. Allows you to act on events and send requests.
+Currently it's a work in progress with many events and requests missing but it's enough to write a simple bar or wallpaper daemon.
+
+The template Haskell portion is vibecoded.
+
+== Usage
+
+don't
+
+== Documentation
+
+You can build the docs using `cabal haddock` and view the html files in a browser.
+
+== Building
+
+Build with Nix flakes: `nix build`
+
+Build using Cabal: `cabal build`
+
+== Contributing
+
+The project provides a Nix dev shell with Haskell tooling.
+You can use it with `nix develop`.
+
+You can format the entire project using `nix fmt`.
