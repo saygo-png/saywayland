@@ -80,6 +80,8 @@ library
     , containers
     , network
     , template-haskell
+    , filepath
+    , directory
 
   hs-source-dirs:  lib
-  exposed-modules: Saywayland, SaywaylandTH
+  exposed-modules: Saywayland, SaywaylandTH, Saywayland.WaylandSocket, Saywayland.Wire, Saywayland.Types
