@@ -83,3 +83,19 @@ library
 
   hs-source-dirs:  lib
   exposed-modules: Saywayland, SaywaylandTH
+
+-- Test of a simple wallpaper daemon
+test-suite client-wallpaper-daemon
+    import:           common-options
+    default-language: GHC2021
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test/clients/wallpaper-daemon
+    main-is:          Main.hs
+    other-modules: Config
+    build-depends:
+      , base
+      , relude
+      , bytestring
+      , network
+      , unix
+      , saywayland
