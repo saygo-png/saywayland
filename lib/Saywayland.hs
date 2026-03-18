@@ -1,4 +1,3 @@
-{-# LANGUAGE DeriveAnyClass #-}
 {-# OPTIONS_GHC -Wno-missing-export-lists #-}
 
 {- HLINT ignore "Use camelCase" -}
@@ -17,25 +16,18 @@ import Control.Concurrent (threadDelay)
 import Data.Binary
 import Data.Binary.Get hiding (remaining)
 import Data.Binary.Put
-import Data.Bits
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
-import Data.ByteString.Lazy.Internal qualified as BSL
 import Data.Map qualified as Map
-import GHC.Show qualified as GHC
+import Data.Maybe (fromJust)
 import Network.Socket (Family (AF_UNIX), SockAddr (SockAddrUnix), Socket, SocketType (Stream), connect, defaultProtocol, socket)
 import Network.Socket.ByteString (sendManyWithFds)
 import Network.Socket.ByteString.Lazy (recv, sendAll)
 import Relude hiding (ByteString, get, put)
-import SaywaylandTH
-import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
-import System.Environment (getEnv)
-import System.Posix.Types (Fd)
-
 import Saywayland.Types
 import Saywayland.WaylandSocket (getSocketPath, openSocket)
-import Data.Maybe (fromJust)
-
+import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
+import System.Posix.Types (Fd)
 
 -- Requests {{{
 

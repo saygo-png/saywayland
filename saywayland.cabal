@@ -78,10 +78,10 @@ library
     , binary
     , bytestring
     , containers
+    , directory
+    , filepath
     , network
     , template-haskell
-    , filepath
-    , directory
 
   hs-source-dirs:  lib
   exposed-modules: Saywayland, SaywaylandTH, Saywayland.WaylandSocket, Saywayland.Types
