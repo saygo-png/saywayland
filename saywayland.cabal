@@ -84,4 +84,4 @@ library
     , directory
 
   hs-source-dirs:  lib
-  exposed-modules: Saywayland, SaywaylandTH, Saywayland.WaylandSocket, Saywayland.Wire, Saywayland.Types
+  exposed-modules: Saywayland, SaywaylandTH, Saywayland.WaylandSocket, Saywayland.Types
