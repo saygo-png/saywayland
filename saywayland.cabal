@@ -11,65 +11,30 @@ homepage:      https://github.com/saygo-png/saywayland
 bug-reports:   https://github.com/saygo-png/saywayland/issues
 description:
   Saywayland is a WIP, simple Wayland library that doesn't use C bindings.
-  Neither does it provide abstractions, it's a fairly raw and incomplete implementation of some
-  Wayland protocols.
+  Neither does it provide abstractions, it's a fairly raw and incomplete implementation of some Wayland protocols.
 
 common common-options
   build-depends:
     , base    >=4.7 && <5
     , relude
 
-  default-language:   GHC2021
+  default-language:   GHC2024
   ghc-options:
-    -Weverything -Wno-missed-extra-shared-lib
-    -Wno-missing-kind-signatures -Wno-safe -Wno-unsafe
-    -Wno-missing-import-lists -Wno-all-missed-specialisations
-    -Wno-missed-specialisations -Wno-missing-safe-haskell-mode
-    -Wno-missing-exported-signatures -Wno-missing-local-signatures
-    -threaded
+    -Weverything -Wno-all-missed-specialisations
+    -Wno-missed-specialisations -Wno-missing-exported-signatures
+    -Wno-missing-import-lists -Wno-missing-kind-signatures
+    -Wno-missing-local-signatures -Wno-missing-safe-haskell-mode
+    -Wno-safe -Wno-unsafe -Wno-unticked-promoted-constructors -rtsopts
+    -threaded -with-rtsopts=-N
 
   default-extensions:
-    BangPatterns
-    BinaryLiterals
-    ConstraintKinds
-    DataKinds
-    DefaultSignatures
-    DeriveDataTypeable
-    DeriveFoldable
-    DeriveFunctor
-    DeriveGeneric
-    DeriveTraversable
-    DerivingStrategies
-    DoAndIfThenElse
     DuplicateRecordFields
-    EmptyDataDecls
-    ExistentialQuantification
-    FlexibleContexts
-    FlexibleInstances
-    FunctionalDependencies
-    GADTs
-    GeneralizedNewtypeDeriving
-    InstanceSigs
-    KindSignatures
-    LambdaCase
-    MultiParamTypeClasses
     MultiWayIf
-    NamedFieldPuns
     NoFieldSelectors
     NoImplicitPrelude
     OverloadedRecordDot
     OverloadedStrings
     PartialTypeSignatures
-    PatternGuards
-    PolyKinds
-    RankNTypes
-    RoleAnnotations
-    ScopedTypeVariables
-    StandaloneDeriving
-    TupleSections
-    TypeFamilies
-    TypeSynonymInstances
-    ViewPatterns
 
 library
   import:          common-options
@@ -93,7 +58,7 @@ library
 -- Test of a simple wallpaper daemon
 test-suite client-wallpaper-daemon
   import:           common-options
-  default-language: GHC2021
+  default-language: GHC2024
   type:             exitcode-stdio-1.0
   hs-source-dirs:   test/clients/wallpaper-daemon
   main-is:          Main.hs
