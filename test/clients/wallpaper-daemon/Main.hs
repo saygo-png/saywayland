@@ -9,6 +9,7 @@ import Data.ByteString.Lazy
 import Network.Socket
 import Relude hiding (ByteString, get, isPrefixOf, put)
 import Saywayland
+import Saywayland.Types
 import System.Posix (ownerReadMode, ownerWriteMode, setFdSize, unionFileModes)
 import System.Posix.IO
 import System.Posix.SharedMem
@@ -23,7 +24,7 @@ main = do
       globals <- newIORef mempty
       objects <- newIORef mempty
       handlers <- newIORef mempty
-      pure $ WaylandEnv sock counter globals objects handlers
+      pure $ ClientEnv sock counter globals objects handlers
 
 program :: Wayland ()
 program = do
@@ -77,4 +78,3 @@ program = do
           takeMVar running
 
   liftIO . void $ bracket makeSharedMemoryObject removeSharedMemoryObject useSharedMemoryObject
-

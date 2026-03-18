@@ -2,7 +2,7 @@ module Config (colorChannels, bufferWidth, bufferHeight, poolName, colorFormat, 
 
 import Data.ByteString.Lazy
 import Relude hiding (ByteString)
-import Saywayland
+import Saywayland.Types
 
 bufferWidth :: WlInt
 bufferWidth = 1920
