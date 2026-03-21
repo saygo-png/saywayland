@@ -50,9 +50,6 @@
           ghcPackages.ghc
           ghcPackages.haskell-language-server
         ];
-        shellHook = ''
-          export CABAL_DIR="$XDG_CONFIG_HOME/cabal"
-        '';
       };
     });
   };
