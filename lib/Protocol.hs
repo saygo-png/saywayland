@@ -80,7 +80,7 @@ data EnumEntry = EnumEntry {
 
 loadProtocols :: FilePath -> Q [Dec]
 loadProtocols path = do
-  addDependentFile path
+  --addDependentFile path
   protocol_files <- filter ((==".xml") . takeExtension) <$> runIO (listDirectory path)
   concat <$> mapM (loadProtocolFile . (path </>)) protocol_files
 
@@ -97,8 +97,8 @@ loadProtocolFile path = do
     protocols
 
 mkParserChain :: String -> [Function a] -> Q Exp
-mkParserChain interfaceName [x] = varE $ mkName $ interfaceName <> "_" <> x.name <> "Parser"
-mkParserChain interfaceName (x:xs) = infixApp (mkParserChain interfaceName xs) op (varE $ mkName $ interfaceName <> "_" <> x.name <> "Parser") 
+mkParserChain interfaceName [x] = appE (varE $ mkName $ interfaceName <> "_" <> x.name <> "Parser") $ varE $ mkName "dat"
+mkParserChain interfaceName (x:xs) = infixApp (mkParserChain interfaceName xs) op (appE (varE $ mkName $ interfaceName <> "_" <> x.name <> "Parser") $ varE $ mkName "dat") 
   where op = varE (mkName "<|>")
 mkParserChain _ [] = [e|undefined|]--[e| Parser <$> const Nothing |]
 
@@ -117,13 +117,13 @@ collectArgs (AppT (AppT ArrowT a) b) =
   in (a : args, ret)
 collectArgs t = ([], t)
 
-genBinds :: [Type] -> Q ([Name], [Stmt])
-genBinds tys = do
-  names <- mapM (\i -> newName ("arg" ++ show i)) [1..length tys]
+genBinds :: [Type] -> Name -> Q ([Name], [Stmt])
+genBinds tys additionaldata = do
+  let names = fmap (mkName . ("arg" ++) . show) [1..length tys]
   stmts <- sequence
     [ do
         e <- getForType ty
-        pure (BindS (VarP n) e)
+        pure (BindS (VarP n) $ AppE e $ VarE additionaldata)
     | (n, ty) <- zip names tys
     ]
   pure (names, stmts)
@@ -135,28 +135,44 @@ getFixed24_8 = do
     return $ fromIntegral raw / 256.0
 
 
+data AdditionalParserData = AdditionalParserData {
+    fds :: [Fd]
+  }
+
+getFd :: AdditionalParserData -> Get Fd
+getFd dat = pure $ head dat.fds
 
 getForType :: Type -> Q Exp
 getForType t = case t of
   ConT name
-    | name == ''Int       -> [| fromIntegral <$> getWord32le |]
-    | name == ''Word32    -> [| getWord32le |]
-    | name == ''BS.ByteString    -> [| getString |]
-    | name == ''Double    -> [| getFixed24_8 |]
-    | name == ''ObjectID  -> [| getWord32le |]
-    | name == ''Fd        -> [| {-fuck.-} getFd |]
+    | name == ''Int       -> [| (const $ fromIntegral <$> getWord32le) |]
+    | name == ''Word32    -> [| (const getWord32le) |]
+    | name == ''BS.ByteString    -> [| (const getString) |]
+    | name == ''Double    -> [| (const getFixed24_8) |]
+    | name == ''ObjectID  -> [| (const getWord32le) |]
+    | name == ''Fd        -> [| (getFd) |]
   _ -> error $ "unsupported type" <> show t
+
+adata :: Name
+adata = mkName "additionalData"
 
 mkParser :: String -> Function a -> Q [Dec]
 mkParser interfaceName f = do
-  (_argNames, argStmts) <- genBinds $ f.fType
+  (argNames, argStmts) <- genBinds f.fType adata
   opCheck <- [| getWord16le |] <&> BindS (VarP (mkName "op"))
   guardStmt <- [| guard (op == $(lit)) |] <&> NoBindS
-  ret <- [| pure () |] <&> NoBindS
+  let func = VarE $ mkName $ functCase interfaceName <> "_" <> f.name
+      args = map VarE argNames
+      ret  = NoBindS $ AppE (VarE (mkName "pure")) (foldl AppE func args)
+  --ret <- [| $(f.name) $(argNameList)|] <&> NoBindS
   let body = DoE Nothing (opCheck : guardStmt : argStmts ++ [ret])
   pure
-    [ SigD name (AppT (ConT ''Get) (AppT (ConT ''Wayland) (TupleT 0)))
-    , FunD name [Clause [] (NormalB body) []]
+    --     name:: InterfaceNameD -> AdditionalParserData -> Get (Interface (a) -> Wayland ())
+    [ SigD name (ForallT 
+          [PlainTV (mkName "a") SpecifiedSpec]
+          [AppT (ConT $ mkName $ "Interface_"<>interfaceName) (VarT (mkName "a"))]
+          $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''Get) $ AppT (AppT ArrowT $ VarT $ mkName "a") (AppT (ConT ''Wayland) (TupleT 0))))
+    , FunD name [Clause [VarP adata] (NormalB body) []]
     ]
   where
     name = mkName $ interfaceName <> "_" <> f.name <> "Parser"
@@ -169,8 +185,10 @@ loadInterface int = do
   requests' <- loadF "request"
   let definitions = fmap (mkFunction name') events' ++ fmap (mkFunction name') requests'
 
-  let parserChain = mkParserChain name' events'
-  let reqParserChain = mkParserChain name' requests'
+  parserChain <- mkParserChain name' events'
+  let parserChainD = FunD eventParserName [ Clause [VarP (mkName "dat")] (NormalB parserChain) [] ]
+  reqParserChain <- mkParserChain name' requests'
+  let reqParserChainD = FunD requestParserName [ Clause [VarP (mkName "dat")] (NormalB reqParserChain) [] ]
 
   concat <$> sequence [
     -- Version
@@ -179,20 +197,17 @@ loadInterface int = do
     , pure [mkClass ("Interface_" <> name') ["a"] definitions]
     -- Event Parsers
     , concat <$> mapM (mkParser name') events'
-    , (singleton) <$> ([t| Get (Wayland ()) |] <&> SigD eventParserName)
-    , [d|
-      $(varP eventParserName) = $(parserChain)
-      |]
+    , (singleton) <$> ([t| $(conT . mkName $ "Interface_" <> name') $(a) => AdditionalParserData -> Get ($(a) -> Wayland ()) |] <&> SigD eventParserName)
+    , pure [parserChainD]
     -- Request Parsers
     , concat <$> mapM (mkParser name') requests'
-    , (singleton) <$> ([t| Get (Wayland ()) |] <&> SigD requestParserName)
-    , [d|
-      $(varP requestParserName) = $(reqParserChain)
-      |]
+    , (singleton) <$> ([t| $(conT . mkName $ "Interface_" <> name') $(a) => AdditionalParserData -> Get ($(a) -> Wayland ()) |] <&> SigD requestParserName)
+    , pure [reqParserChainD]
     -- Enums
     , pure $ concatMap (uncurry $ mkEnum name') enums'
     ]
   where
+    a = varT $ mkName "a"
     eventParserName = mkName $ "eventParser_" <> name'
     requestParserName = mkName $ "requestParser_" <> name'
     name' = fromJust $ findAttr (qname "name") int
