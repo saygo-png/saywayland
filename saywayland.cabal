@@ -89,3 +89,4 @@ test-suite template-haskell-protocol
     , relude
     , saywayland
     , unix
+    , template-haskell

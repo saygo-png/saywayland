@@ -9,7 +9,7 @@ import Saywayland.Types (Wayland)
 
 import Prelude
 import Control.Applicative
-import Control.Monad (guard)
+import Control.Monad (guard, unless, zipWithM)
 import Data.Functor
 import Data.Word (Word16,Word32)
 import Data.Maybe (fromJust,Maybe,Maybe(Just,Nothing))
@@ -21,17 +21,18 @@ import qualified Data.ByteString as BS
 import qualified Data.Text as T
 
 import System.Posix (Fd)
-import System.Directory (makeAbsolute,listDirectory)
-import System.FilePath (takeDirectory,takeExtension)
-import System.FilePath ((</>))
+import System.Directory (listDirectory)
+import System.FilePath (takeExtension, (</>))
 
 import Text.XML.Light
 
 type ObjectID = Word32
 
-
+classCase, functCase :: String -> String
 classCase (x:xs) = toUpper x : xs
+classCase [] = []
 functCase (x:xs) = toLower x : xs
+functCase [] = []
 
 mkClass :: String -> [String] -> [Dec] -> Dec
 mkClass t args = ClassD [] (mkName $ classCase t) (fmap ((`PlainTV` BndrReq) . mkName) args) []
@@ -62,7 +63,7 @@ mkEnum interfaceName enumName enumKV = [
   where
     enumName' = "Enum_" <> interfaceName <> "_" <> enumName
     funName = "enum_" <> interfaceName <> "_" <> enumName
-    constructors = fmap ((`NormalC` []) . mkName . (enumName'<>)) $ fmap fst enumKV
+    constructors = (`NormalC` []) . mkName . (enumName'<>) <$> fmap fst enumKV
     clauses = [Clause [ConP (mkName $ enumName' <> k) [] []] (NormalB (LitE (IntegerL (fromIntegral v)))) [] | (k,v)<-enumKV]
 
 data FunctionType = Event | Request
@@ -78,22 +79,21 @@ data EnumEntry = EnumEntry {
   }
 
 
-loadProtocols :: FilePath -> Q [Dec]
-loadProtocols path = do
-  --addDependentFile path
-  protocol_files <- filter ((==".xml") . takeExtension) <$> runIO (listDirectory path)
-  concat <$> mapM (loadProtocolFile . (path </>)) protocol_files
+loadProtocols :: Bool -> FilePath -> Q [Dec]
+loadProtocols isIO path = do
+  protocol_files <- filter ((== ".xml") . takeExtension) <$> runIO (listDirectory path)
+  concat <$> mapM (loadProtocolFile isIO . (path </>)) protocol_files
 
 qname :: String -> QName
 qname x = QName x Nothing Nothing
 
-loadProtocolFile :: FilePath -> Q [Dec]
-loadProtocolFile path = do
-  addDependentFile path
-  protocols <- filter ((==(qname "protocol")) . elName) . onlyElems . parseXML <$> runIO (BS.readFile path)
+loadProtocolFile :: Bool -> FilePath -> Q [Dec]
+loadProtocolFile isIO path = do
+  unless isIO $ addDependentFile path
+  protocols <- filter ((== qname "protocol") . elName) . onlyElems . parseXML <$> runIO (BS.readFile path)
   runIO $ print protocols
   concat <$> mapM 
-    ((<&>concat) . mapM loadInterface . findChildren (qname "interface"))
+    ((<&> concat) . mapM loadInterface . findChildren (qname "interface"))
     protocols
 
 mkParserChain :: String -> [Function a] -> Q Exp
@@ -150,7 +150,7 @@ getForType t = case t of
     | name == ''BS.ByteString    -> [| (const getString) |]
     | name == ''Double    -> [| (const getFixed24_8) |]
     | name == ''ObjectID  -> [| (const getWord32le) |]
-    | name == ''Fd        -> [| (getFd) |]
+    | name == ''Fd        -> [| getFd |]
   _ -> error $ "unsupported type" <> show t
 
 adata :: Name
@@ -170,7 +170,7 @@ mkParser interfaceName f = do
     --     name:: InterfaceNameD -> AdditionalParserData -> Get (Interface (a) -> Wayland ())
     [ SigD name (ForallT 
           [PlainTV (mkName "a") SpecifiedSpec]
-          [AppT (ConT $ mkName $ "Interface_"<>interfaceName) (VarT (mkName "a"))]
+          [AppT (ConT $ mkName $ "Interface_" <> interfaceName) (VarT (mkName "a"))]
           $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''Get) $ AppT (AppT ArrowT $ VarT $ mkName "a") (AppT (ConT ''Wayland) (TupleT 0))))
     , FunD name [Clause [VarP adata] (NormalB body) []]
     ]
@@ -183,7 +183,7 @@ loadInterface int = do
 
   events' <- loadF "event"
   requests' <- loadF "request"
-  let definitions = fmap (mkFunction name') events' ++ fmap (mkFunction name') requests'
+  let definitions = fmap (mkFunction name') requests' ++ fmap (mkFunction name') events'
 
   parserChain <- mkParserChain name' events'
   let parserChainD = FunD eventParserName [ Clause [VarP (mkName "dat")] (NormalB parserChain) [] ]
@@ -195,14 +195,14 @@ loadInterface int = do
       [d| $(varP (mkName $ name' <> "Version")) = $(pure . LitE . IntegerL $ version') |]
     -- Class definition
     , pure [mkClass ("Interface_" <> name') ["a"] definitions]
-    -- Event Parsers
-    , concat <$> mapM (mkParser name') events'
-    , (singleton) <$> ([t| $(conT . mkName $ "Interface_" <> name') $(a) => AdditionalParserData -> Get ($(a) -> Wayland ()) |] <&> SigD eventParserName)
-    , pure [parserChainD]
     -- Request Parsers
     , concat <$> mapM (mkParser name') requests'
-    , (singleton) <$> ([t| $(conT . mkName $ "Interface_" <> name') $(a) => AdditionalParserData -> Get ($(a) -> Wayland ()) |] <&> SigD requestParserName)
+    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a => AdditionalParserData -> Get ($a -> Wayland ()) |] <&> SigD requestParserName)
     , pure [reqParserChainD]
+    -- Event Parsers
+    , concat <$> mapM (mkParser name') events'
+    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a => AdditionalParserData -> Get ($a -> Wayland ()) |] <&> SigD eventParserName)
+    , pure [parserChainD]
     -- Enums
     , pure $ concatMap (uncurry $ mkEnum name') enums'
     ]
@@ -211,11 +211,11 @@ loadInterface int = do
     eventParserName = mkName $ "eventParser_" <> name'
     requestParserName = mkName $ "requestParser_" <> name'
     name' = fromJust $ findAttr (qname "name") int
-    loadF x = mapM (uncurry loadFunction) $ zip [0..] $ findChildren (qname x) int
+    loadF x = zipWithM loadFunction [0..] $ findChildren (qname x) int
     version' = read . fromJust $ findAttr (qname "version") int
-    enums' = fmap loadEnum $ findChildren (qname "enum") int
+    enums' = loadEnum <$> findChildren (qname "enum") int
 loadEnum :: Element -> (String, [(String, Int)])
-loadEnum e' = (fromJust $ findAttr (qname "name") e', fmap f $ findChildren (qname "entry") e')
+loadEnum e' = (fromJust $ findAttr (qname "name") e', f <$> findChildren (qname "entry") e')
   where
     f e = (fromJust $ findAttr (qname "name") e, read $ fromJust $ findAttr (qname "value") e)
 loadFunction :: Word16 -> Element -> Q (Function Event)
@@ -232,7 +232,7 @@ loadFunction opcode element = stack (findChildren (qname "arg") element) <&> \x 
     stack :: [Element] -> Q [Type]
     stack [x] = pure $ argType x
     stack []  = pure []
-    stack (x:xs) = (argType x++) <$> stack xs
+    stack (x:xs) = (argType x ++) <$> stack xs
     --stack (x:xs) = AppT (AppT ArrowT $ argType x) <$> stack xs
     --stack [] = sequence [[t|Wayland.Types.Wayland ()|]]
     argType :: Element -> [Type]
