@@ -10,12 +10,9 @@ import Language.Haskell.TH (Type(ConT))
 import Data.ByteString.Lazy qualified as BSL
 import Data.Map qualified as Map
 import Data.Binary.Put (runPut, putLazyByteString)
---import Network.Socket.ByteString
 import Data.Binary (Binary (get, put))
 import Network.Socket.ByteString.Lazy (sendAll)
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
---data ClientWL_display = ClientWL_display {}
---data ServerWL_display = ServerWL_display {}
 
 -- ObjectID Type {{{
 type role ObjectID phantom
@@ -28,7 +25,6 @@ instance Binary (ObjectID a) where
   get = ObjectID <$> get
   put (ObjectID x) = put x
 -- }}}
-
 
 -- Interfaces {{{
 data WL_display = WL_display {}
