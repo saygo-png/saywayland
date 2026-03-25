@@ -252,6 +252,7 @@ formatEvent = \case
 -- Event loop {{{
 
 -- | Core event loop. It reads the socket and processes the data using 'processBuffer'
+{-
 eventLoop :: Wayland ()
 eventLoop = do
   env <- ask
@@ -327,6 +328,7 @@ onEvent handler = do
 If it fails it recurses. It does this 10 times with a small delay.
 Prints an exception and exits with a fail if the interface is not found within 10 tries.
 -}
+{-
 bindToInterface :: ObjectID 'WlRegistry -> IORef Globals -> WlString -> WaylandInterface -> Wayland (ObjectID a)
 bindToInterface registryID globalsRef targetInterface waylandInterface =
   let go (count :: Int) = do
@@ -347,7 +349,7 @@ bindToInterface registryID globalsRef targetInterface waylandInterface =
     findInterface globals =
       let target = targetInterface <> "\0"
        in find (\(_, e) -> target.unWlString `BSL.isPrefixOf` e.interface.unWlString) globals >>= Just . snd
-
+-}
 -- | The header size is always 8 in Wayland.
 headerSize :: Word16
 headerSize = 8
@@ -426,5 +428,5 @@ nextID counter = do
   return current
 
 -- }}}
-
+-}
 -- vim: foldmethod=marker

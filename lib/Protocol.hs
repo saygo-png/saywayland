@@ -25,6 +25,7 @@ import System.Directory (listDirectory)
 import System.FilePath (takeExtension, (</>))
 
 import Text.XML.Light
+import Data.Binary.Put (putInt32be, putByteString)
 
 type ObjectID = Word32
 
@@ -50,7 +51,17 @@ constructType (x:xs) = AppT (AppT ArrowT x) $ constructType xs
 -- example output:
 -- functionName -> Arg1 -> Arg2 -> a -> W ()
 mkFunction :: Type -> String -> Function a -> Dec
-mkFunction monad interfaceName f = SigD (mkName $ functCase interfaceName <> "_" <> f.name) $ constructType $ f.fType <> [{-a is the instance the data the class interface is implemented to-} VarT (mkName "a"), AppT monad $ TupleT 0]
+mkFunction monad interfaceName f = SigD (mkName $ functCase interfaceName <> "_" <> f.name) $ constructType $ f.fType 
+    <> [VarT (mkName "a"), AppT (AppT monad $ VarT $ mkName "p") $ TupleT 0]
+mkBuilder :: String -> Function a -> Q [Dec]
+mkBuilder interfaceName f = do 
+  (argNames, argStmts) <- genBindsPut f.fType adata
+  ret <- NoBindS <$> [e|pure ()|]
+  let body = DoE Nothing $ argStmts ++ [ret]
+  pure [
+      SigD (mkName $ functCase interfaceName <> "_" <> f.name <> "Builder") $ constructType $ ConT ''AdditionalParserData:f.fType ++ [ConT ''Put]
+    , FunD (mkName $ interfaceName <> "_" <> f.name <> "Builder") [Clause (VarP adata:fmap VarP argNames) (NormalB body) []]
+    ]
 -- example output:
 -- data EnumName = A | B | C | D ... deriving Eq
 -- enumName' A = 1 ...
@@ -117,8 +128,8 @@ collectArgs (AppT (AppT ArrowT a) b) =
   in (a : args, ret)
 collectArgs t = ([], t)
 
-genBinds :: [Type] -> Name -> Q ([Name], [Stmt])
-genBinds tys additionaldata = do
+genBindsGet :: [Type] -> Name -> Q ([Name], [Stmt])
+genBindsGet tys additionaldata = do
   let names = fmap (mkName . ("arg" ++) . show) [1..length tys]
   stmts <- sequence
     [ do
@@ -128,12 +139,23 @@ genBinds tys additionaldata = do
     ]
   pure (names, stmts)
 
+genBindsPut :: [Type] -> Name -> Q ([Name], [Stmt])
+genBindsPut tys additionaldata = do
+  let names = fmap (mkName . ("arg" ++) . show) [1..length tys]
+  stmts <- sequence
+    [ do
+        e <- putForType ty
+        pure (NoBindS $ AppE (AppE e $ VarE additionaldata) (VarE n))
+    | (n, ty) <- zip names tys
+    ]
+  pure (names, stmts)
+
 
 getFixed24_8 :: Get Double
-getFixed24_8 = do
-    raw <- getInt32be
-    return $ fromIntegral raw / 256.0
+getFixed24_8 = getInt32be <&> (/ 256.0) . fromIntegral
 
+putFixed24_8 :: Double -> Put
+putFixed24_8 d = putInt32be $ fromIntegral $ round $ d * 256
 
 data AdditionalParserData = AdditionalParserData {
     fds :: [Fd]
@@ -153,12 +175,23 @@ getForType t = case t of
     | name == ''Fd        -> [| getFd |]
   _ -> error $ "unsupported type" <> show t
 
+putForType :: Type -> Q Exp
+putForType t = case t of
+  ConT name
+    | name == ''Int       -> [| (const $ put . fromIntegral) |]
+    | name == ''Word32    -> [| (const put) |]
+    | name == ''BS.ByteString    -> [| (const putByteString) |]
+    | name == ''Double    -> [| (const putFixed24_8) |]
+    | name == ''ObjectID  -> [| (const put) |]
+    | name == ''Fd        -> [| undefined |]
+  _ -> error $ "unsupported type" <> show t
+
 adata :: Name
 adata = mkName "additionalData"
 
 mkParser :: Type -> String -> Function a -> Q [Dec]
 mkParser monad interfaceName f = do
-  (argNames, argStmts) <- genBinds f.fType adata
+  (argNames, argStmts) <- genBindsGet f.fType adata
   opCheck <- [| getWord16le |] <&> BindS (VarP (mkName "op"))
   guardStmt <- [| guard (op == $(lit)) |] <&> NoBindS
   let func = VarE $ mkName $ functCase interfaceName <> "_" <> f.name
@@ -169,9 +202,9 @@ mkParser monad interfaceName f = do
   pure
     --     name:: InterfaceNameD -> AdditionalParserData -> Get (Interface (a) -> Wayland ())
     [ SigD name (ForallT 
-          [PlainTV (mkName "a") SpecifiedSpec]
-          [AppT (ConT $ mkName $ "Interface_" <> interfaceName) (VarT (mkName "a"))]
-          $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''Get) $ AppT (AppT ArrowT $ VarT $ mkName "a") (AppT monad (TupleT 0))))
+          [PlainTV (mkName "a") SpecifiedSpec, PlainTV (mkName "p") SpecifiedSpec]
+          [AppT (AppT (ConT $ mkName $ "Interface_" <> interfaceName) (VarT (mkName "a"))) (VarT (mkName "p"))]
+          $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''Get) $ AppT (AppT ArrowT $ VarT $ mkName "a") (AppT (AppT monad $ VarT $ mkName "p") (TupleT 0))))
     , FunD name [Clause [VarP adata] (NormalB body) []]
     ]
   where
@@ -185,6 +218,8 @@ loadInterface monad int = do
   requests' <- loadF "request"
   let definitions = fmap (mkFunction monad name') requests' ++ fmap (mkFunction monad name') events'
 
+  let builders = ((++) <$> mapM (mkBuilder name') requests' <*> mapM (mkBuilder name') events') <&> concat
+
   parserChain <- mkParserChain name' events'
   let parserChainD = FunD eventParserName [ Clause [VarP (mkName "dat")] (NormalB parserChain) [] ]
   reqParserChain <- mkParserChain name' requests'
@@ -194,17 +229,18 @@ loadInterface monad int = do
     -- Version
       [d| $(varP (mkName $ name' <> "Version")) = $(pure . LitE . IntegerL $ version') |]
     -- Class definition
-    , pure [mkClass ("Interface_" <> name') ["a"] definitions]
+    , pure [mkClass ("Interface_" <> name') ["a", "p"] definitions]
     -- Request Parsers
     , concat <$> mapM (mkParser monad name') requests'
-    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a => AdditionalParserData -> Get ($a -> $(pure monad) ()) |] <&> SigD requestParserName)
+    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a $(pure . VarT $ mkName "p") => AdditionalParserData -> Get ($a -> $(pure monad) $(pure . VarT $ mkName "p") ()) |] <&> SigD requestParserName)
     , pure [reqParserChainD]
     -- Event Parsers
     , concat <$> mapM (mkParser monad name') events'
-    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a => AdditionalParserData -> Get ($a -> $(pure monad) ()) |] <&> SigD eventParserName)
+    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a $(pure . VarT $ mkName "p") => AdditionalParserData -> Get ($a -> $(pure monad) $(pure . VarT $ mkName "p") ()) |] <&> SigD eventParserName)
     , pure [parserChainD]
     -- Enums
     , pure $ concatMap (uncurry $ mkEnum name') enums'
+    , builders
     ]
   where
     a = varT $ mkName "a"

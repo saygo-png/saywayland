@@ -56,7 +56,7 @@ library
     Saywayland
     Saywayland.Types
     Saywayland.Protocol
-    Saywayland.Env
+    --Saywayland.Env
     Saywayland.Interfaces
     Saywayland.WaylandSocket
     SaywaylandTH

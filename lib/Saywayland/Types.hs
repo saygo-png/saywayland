@@ -171,7 +171,12 @@ type Globals = Map WlUint (Header, BodyWlRegistry_global)
 The state contained is only essential, the user is expected to make their own structures
 to store state required for their specific application. This can be done using event handlers made with 'onEvent'.
 -}
-data WaylandEnv i = ServerEnv (ServerEnvironment i) | ClientEnv (ClientEnvironment i)
+
+data Perspective = Client | Server
+
+data WaylandEnv i (p :: Perspective) where
+  ClientEnv :: ClientEnvironment i -> WaylandEnv i 'Client
+  ServerEnv :: ServerEnvironment i -> WaylandEnv i 'Server
 
 data ServerEnvironment i = ServerEnvironment
   {
@@ -187,7 +192,7 @@ data ClientEnvironment i = ClientEnvironment
 
 -- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.
 
-type WaylandM i = ReaderT (WaylandEnv i) IO
+type WaylandM i p = ReaderT (WaylandEnv i p) IO
 
 -- | Type representing a Wayland buffer.
 data Buffer = Buffer
