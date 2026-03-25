@@ -1,8 +1,9 @@
 module Main (main) where
 
+import Language.Haskell.TH
 import Prelude
 import Protocol
 
 main :: IO ()
 main = do
-  writeFile "output.th.hs" $ loadProtocols "protocols"
+  runQ (loadProtocols True "protocols") >>= writeFile "output.th.hs" . pprint
