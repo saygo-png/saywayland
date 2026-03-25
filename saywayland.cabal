@@ -76,3 +76,16 @@ test-suite client-wallpaper-daemon
     , relude
     , saywayland
     , unix
+test-suite template-haskell-protocol
+  import:           common-options
+  default-language: GHC2024
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test/both/protocol
+  main-is:          Main.hs
+  build-depends:
+    , base
+    , bytestring
+    , network
+    , relude
+    , saywayland
+    , unix
