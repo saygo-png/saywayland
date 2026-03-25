@@ -28,10 +28,12 @@ import Saywayland.Types
 import Saywayland.WaylandSocket (getSocketPath, openSocket)
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
 import System.Posix.Types (Fd)
+import Saywayland.Interfaces
 
 -- Requests {{{
 
 -- | https://wayland.app/protocols/wayland#wl_display:request:get_registry
+{-
 wlDisplay_getRegistry :: Wayland (ObjectID 'WlRegistry)
 wlDisplay_getRegistry = do
   env <- ask
@@ -244,7 +246,7 @@ formatEvent = \case
   where
     fmt :: Text -> Header -> Text -> Text
     fmt interface h details = interface <> "@" <> show h.objectID <> "." <> details
-
+-}
 -- }}}
 
 -- Event loop {{{

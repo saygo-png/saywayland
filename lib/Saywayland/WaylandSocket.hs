@@ -12,6 +12,7 @@ import System.Environment.Blank (getEnv)
 import System.FilePath
 import Prelude
 
+import Saywayland.Interfaces
 -- Listeners {{{
 
 -- | listen for client connections in provided socket.
@@ -23,7 +24,7 @@ listenForClients sock = do
   serial <- liftIO $ newIORef 0
   objectsref <- liftIO $ newIORef M.empty
   handlers <- newIORef []
-  let clientenv = ClientEnv{socket = sock, globals = globalsref, counter = serial, objects = objectsref, eventHandlers = handlers}
+  let clientenv = ClientEnv $ ClientEnvironment{socket = sock, {-globals = globalsref,-} counter = serial, objects = objectsref{-, eventHandlers = handlers-}}
   _ <- liftIO $ forkIO $ runReaderT (clientLoop sock) clientenv
   liftIO $ runReaderT (listenForClients sock) env
 
@@ -53,7 +54,7 @@ getWaylandDisplay :: IO (Maybe String)
 getWaylandDisplay = getEnv "WAYLAND_DISPLAY"
 
 getSocketPath :: IO (Maybe FilePath) -> IO (Maybe FilePath)
-getSocketPath waylandSocket = liftA2 (liftA2 (</>)) getXdgRuntimeDir waylandSocket
+getSocketPath = liftA2 (liftA2 (</>)) getXdgRuntimeDir
 
 -- | Find an already existing socket, if the environment variable does not exist
 openSocket :: IO (Maybe FilePath)

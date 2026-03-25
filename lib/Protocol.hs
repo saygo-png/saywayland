@@ -5,7 +5,7 @@ module Protocol where
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 
-import Saywayland.Types (Wayland)
+--import Saywayland.Types (Wayland)
 
 import Prelude
 import Control.Applicative
@@ -49,8 +49,8 @@ constructType [x] = x
 constructType (x:xs) = AppT (AppT ArrowT x) $ constructType xs
 -- example output:
 -- functionName -> Arg1 -> Arg2 -> a -> W ()
-mkFunction :: String -> Function a -> Dec
-mkFunction interfaceName f = SigD (mkName $ functCase interfaceName <> "_" <> f.name) $ constructType $ f.fType <> [{-a is the instance the data the class interface is implemented to-} VarT (mkName "a"), AppT (ConT ''Wayland) $ TupleT 0]
+mkFunction :: Type -> String -> Function a -> Dec
+mkFunction monad interfaceName f = SigD (mkName $ functCase interfaceName <> "_" <> f.name) $ constructType $ f.fType <> [{-a is the instance the data the class interface is implemented to-} VarT (mkName "a"), AppT monad $ TupleT 0]
 -- example output:
 -- data EnumName = A | B | C | D ... deriving Eq
 -- enumName' A = 1 ...
@@ -79,21 +79,21 @@ data EnumEntry = EnumEntry {
   }
 
 
-loadProtocols :: Bool -> FilePath -> Q [Dec]
-loadProtocols isIO path = do
+loadProtocols :: Type -> Bool -> FilePath -> Q [Dec]
+loadProtocols monad isIO path = do
   protocol_files <- filter ((== ".xml") . takeExtension) <$> runIO (listDirectory path)
-  concat <$> mapM (loadProtocolFile isIO . (path </>)) protocol_files
+  concat <$> mapM (loadProtocolFile monad isIO . (path </>)) protocol_files
 
 qname :: String -> QName
 qname x = QName x Nothing Nothing
 
-loadProtocolFile :: Bool -> FilePath -> Q [Dec]
-loadProtocolFile isIO path = do
+loadProtocolFile :: Type -> Bool -> FilePath -> Q [Dec]
+loadProtocolFile monad isIO path = do
   unless isIO $ addDependentFile path
   protocols <- filter ((== qname "protocol") . elName) . onlyElems . parseXML <$> runIO (BS.readFile path)
   runIO $ print protocols
   concat <$> mapM 
-    ((<&> concat) . mapM loadInterface . findChildren (qname "interface"))
+    ((<&> concat) . mapM (loadInterface monad) . findChildren (qname "interface"))
     protocols
 
 mkParserChain :: String -> [Function a] -> Q Exp
@@ -156,8 +156,8 @@ getForType t = case t of
 adata :: Name
 adata = mkName "additionalData"
 
-mkParser :: String -> Function a -> Q [Dec]
-mkParser interfaceName f = do
+mkParser :: Type -> String -> Function a -> Q [Dec]
+mkParser monad interfaceName f = do
   (argNames, argStmts) <- genBinds f.fType adata
   opCheck <- [| getWord16le |] <&> BindS (VarP (mkName "op"))
   guardStmt <- [| guard (op == $(lit)) |] <&> NoBindS
@@ -171,19 +171,19 @@ mkParser interfaceName f = do
     [ SigD name (ForallT 
           [PlainTV (mkName "a") SpecifiedSpec]
           [AppT (ConT $ mkName $ "Interface_" <> interfaceName) (VarT (mkName "a"))]
-          $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''Get) $ AppT (AppT ArrowT $ VarT $ mkName "a") (AppT (ConT ''Wayland) (TupleT 0))))
+          $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''Get) $ AppT (AppT ArrowT $ VarT $ mkName "a") (AppT monad (TupleT 0))))
     , FunD name [Clause [VarP adata] (NormalB body) []]
     ]
   where
     name = mkName $ interfaceName <> "_" <> f.name <> "Parser"
     lit = litE $ integerL $ fromIntegral f.opcode
 
-loadInterface :: Element -> Q [Dec]
-loadInterface int = do 
+loadInterface :: Type -> Element -> Q [Dec]
+loadInterface monad int = do 
 
   events' <- loadF "event"
   requests' <- loadF "request"
-  let definitions = fmap (mkFunction name') requests' ++ fmap (mkFunction name') events'
+  let definitions = fmap (mkFunction monad name') requests' ++ fmap (mkFunction monad name') events'
 
   parserChain <- mkParserChain name' events'
   let parserChainD = FunD eventParserName [ Clause [VarP (mkName "dat")] (NormalB parserChain) [] ]
@@ -196,12 +196,12 @@ loadInterface int = do
     -- Class definition
     , pure [mkClass ("Interface_" <> name') ["a"] definitions]
     -- Request Parsers
-    , concat <$> mapM (mkParser name') requests'
-    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a => AdditionalParserData -> Get ($a -> Wayland ()) |] <&> SigD requestParserName)
+    , concat <$> mapM (mkParser monad name') requests'
+    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a => AdditionalParserData -> Get ($a -> $(pure monad) ()) |] <&> SigD requestParserName)
     , pure [reqParserChainD]
     -- Event Parsers
-    , concat <$> mapM (mkParser name') events'
-    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a => AdditionalParserData -> Get ($a -> Wayland ()) |] <&> SigD eventParserName)
+    , concat <$> mapM (mkParser monad name') events'
+    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a => AdditionalParserData -> Get ($a -> $(pure monad) ()) |] <&> SigD eventParserName)
     , pure [parserChainD]
     -- Enums
     , pure $ concatMap (uncurry $ mkEnum name') enums'

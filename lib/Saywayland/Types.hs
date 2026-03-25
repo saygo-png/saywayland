@@ -171,26 +171,23 @@ type Globals = Map WlUint (Header, BodyWlRegistry_global)
 The state contained is only essential, the user is expected to make their own structures
 to store state required for their specific application. This can be done using event handlers made with 'onEvent'.
 -}
-data WaylandEnv
-  = ClientEnv
-      { socket :: Socket
-      -- ^ The connected UNIX socket.
-      , counter :: IORef WlID
-      -- ^ Counter used for generating unique object IDs.
-      , globals :: IORef Globals
-      -- ^ Map of received globals. Globals might be removed.
-      , objects :: IORef (Map WlID WaylandInterface)
-      -- ^ Map of existing objects. Objects might be removed.
-      , eventHandlers :: IORef [WaylandEvent -> Wayland ()]
-      -- ^ List of custom event handlers. Use 'onEvent' to add a custom handler.
-      }
-  | ServerEnv
-      { serverSocket :: Socket
-      , clients :: [WaylandEnv]
-      }
+data WaylandEnv i = ServerEnv (ServerEnvironment i) | ClientEnv (ClientEnvironment i)
+
+data ServerEnvironment i = ServerEnvironment
+  {
+    socket  :: Socket
+  , clients :: IORef [ClientEnvironment i]
+  }
+data ClientEnvironment i = ClientEnvironment
+  {
+    socket  :: Socket
+  , counter :: IORef Word32
+  , objects :: IORef (Map Word32 i)
+  }
 
 -- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.
-type Wayland = ReaderT WaylandEnv IO
+
+type WaylandM i = ReaderT (WaylandEnv i) IO
 
 -- | Type representing a Wayland buffer.
 data Buffer = Buffer
