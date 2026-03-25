@@ -13,6 +13,8 @@ description:
   Saywayland is a WIP, simple Wayland library that doesn't use C bindings.
   Neither does it provide abstractions, it's a fairly raw and incomplete implementation of some Wayland protocols.
 
+extra-source-files: protocols/*.xml
+
 common common-options
   build-depends:
     , base    >=4.7 && <5
@@ -53,6 +55,8 @@ library
   exposed-modules:
     Saywayland
     Saywayland.Types
+    Saywayland.Protocol
+    Saywayland.Interfaces
     Saywayland.WaylandSocket
     SaywaylandTH
     Protocol

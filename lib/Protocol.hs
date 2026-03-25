@@ -5,7 +5,7 @@ module Protocol where
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 
-import Saywayland.Types (Wayland, ObjectID)
+import Saywayland.Types (Wayland)
 
 import Prelude
 import Control.Applicative
@@ -15,17 +15,20 @@ import Data.Word (Word16,Word32)
 import Data.Maybe (fromJust,Maybe,Maybe(Just,Nothing))
 import Data.Char (toUpper, toLower)
 import Data.List (singleton)
-import Data.Binary (Get)
-import Data.Binary.Get (getWord16le, getWord32le, getBytes)
+import Data.Binary
+import Data.Binary.Get
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
 
 import System.Posix (Fd)
-import System.Directory (listDirectory)
-import System.FilePath (takeExtension)
+import System.Directory (makeAbsolute,listDirectory)
+import System.FilePath (takeDirectory,takeExtension)
 import System.FilePath ((</>))
 
 import Text.XML.Light
+
+type ObjectID = Word32
+
 
 classCase (x:xs) = toUpper x : xs
 functCase (x:xs) = toLower x : xs
@@ -45,22 +48,22 @@ constructType [x] = x
 constructType (x:xs) = AppT (AppT ArrowT x) $ constructType xs
 -- example output:
 -- functionName -> Arg1 -> Arg2 -> a -> W ()
-mkFunction :: Function a -> Dec
-mkFunction f = SigD (mkName f.name) $ constructType $ f.fType <> [{-a is the instance the data the class interface is implemented to-} ConT (mkName "a"), AppT (ConT ''Wayland) $ TupleT 0]
+mkFunction :: String -> Function a -> Dec
+mkFunction interfaceName f = SigD (mkName $ functCase interfaceName <> "_" <> f.name) $ constructType $ f.fType <> [{-a is the instance the data the class interface is implemented to-} VarT (mkName "a"), AppT (ConT ''Wayland) $ TupleT 0]
 -- example output:
 -- data EnumName = A | B | C | D ... deriving Eq
 -- enumName' A = 1 ...
-mkEnum :: String -> [(String,Int)] -> [Dec]
-mkEnum enumName enumKV = [
-    DataD [] enumName' [] Nothing constructors [DerivClause Nothing [ConT ''Eq]]
-  , SigD funName (AppT (AppT ArrowT (ConT enumName')) (ConT ''Int))
-  , FunD funName clauses
+mkEnum :: String -> String -> [(String,Int)] -> [Dec]
+mkEnum interfaceName enumName enumKV = [
+    DataD [] (mkName enumName') [] Nothing constructors [DerivClause Nothing [ConT ''Eq]]
+  , SigD (mkName funName) (AppT (AppT ArrowT (ConT $ mkName enumName')) (ConT ''Int))
+  , FunD (mkName funName) clauses
   ]
   where
-    enumName' = mkName $ classCase enumName <> "Enum"
-    funName = mkName $ functCase enumName <> "Enum'"
-    constructors = fmap ((`NormalC` []) . mkName) $ fmap fst enumKV
-    clauses = [Clause [ConP (mkName k) [] []] (NormalB (LitE (IntegerL (fromIntegral v)))) [] | (k,v)<-enumKV]
+    enumName' = "Enum_" <> interfaceName <> "_" <> enumName
+    funName = "enum_" <> interfaceName <> "_" <> enumName
+    constructors = fmap ((`NormalC` []) . mkName . (enumName'<>)) $ fmap fst enumKV
+    clauses = [Clause [ConP (mkName $ enumName' <> k) [] []] (NormalB (LitE (IntegerL (fromIntegral v)))) [] | (k,v)<-enumKV]
 
 data FunctionType = Event | Request
 data Function _type = Function
@@ -77,7 +80,7 @@ data EnumEntry = EnumEntry {
 
 loadProtocols :: FilePath -> Q [Dec]
 loadProtocols path = do
-  --addDependentFile path
+  addDependentFile path
   protocol_files <- filter ((==".xml") . takeExtension) <$> runIO (listDirectory path)
   concat <$> mapM (loadProtocolFile . (path </>)) protocol_files
 
@@ -86,40 +89,18 @@ qname x = QName x Nothing Nothing
 
 loadProtocolFile :: FilePath -> Q [Dec]
 loadProtocolFile path = do
-  --addDependentFile path
+  addDependentFile path
   protocols <- filter ((==(qname "protocol")) . elName) . onlyElems . parseXML <$> runIO (BS.readFile path)
   runIO $ print protocols
   concat <$> mapM 
     ((<&>concat) . mapM loadInterface . findChildren (qname "interface"))
     protocols
 
-newtype Parser a = Parser {runParser :: BS.ByteString -> Maybe (BS.ByteString, a)}
-
-instance Functor Parser where
-  fmap f (Parser p) = 
-    Parser $ \input -> do
-      (input', x) <- p input
-      Just(input', f x)
-
-instance Applicative Parser where
-  pure x = Parser $ \input -> Just (input, x)
-  (Parser p1) <*> (Parser p2) = 
-    Parser $ \input -> do
-      (input', f) <- p1 input
-      (input'', a) <- p2 input'
-      Just (input'', f a)
-
-instance Alternative Parser where
-  empty = Parser $ \_ -> Nothing
-  (Parser p1) <|> (Parser p2) = Parser $ \input -> 
-    p1 input <|> p2 input
-
-
-mkParserChain :: [Function a] -> Q Exp
-mkParserChain [x] = varE $ mkName $ x.name <> "Parser"
-mkParserChain (x:xs) = infixApp (mkParserChain xs) op (varE $ mkName $ x.name <> "Parser") 
+mkParserChain :: String -> [Function a] -> Q Exp
+mkParserChain interfaceName [x] = varE $ mkName $ interfaceName <> "_" <> x.name <> "Parser"
+mkParserChain interfaceName (x:xs) = infixApp (mkParserChain interfaceName xs) op (varE $ mkName $ interfaceName <> "_" <> x.name <> "Parser") 
   where op = varE (mkName "<|>")
-mkParserChain [] = [e|undefined|]--[e| Parser <$> const Nothing |]
+mkParserChain _ [] = [e|undefined|]--[e| Parser <$> const Nothing |]
 
 getString :: Get BS.ByteString
 getString = do 
@@ -147,6 +128,14 @@ genBinds tys = do
     ]
   pure (names, stmts)
 
+
+getFixed24_8 :: Get Double
+getFixed24_8 = do
+    raw <- getInt32be
+    return $ fromIntegral raw / 256.0
+
+
+
 getForType :: Type -> Q Exp
 getForType t = case t of
   ConT name
@@ -158,8 +147,8 @@ getForType t = case t of
     | name == ''Fd        -> [| {-fuck.-} getFd |]
   _ -> error $ "unsupported type" <> show t
 
-mkParser :: Function a -> Q [Dec]
-mkParser f = do
+mkParser :: String -> Function a -> Q [Dec]
+mkParser interfaceName f = do
   (_argNames, argStmts) <- genBinds $ f.fType
   opCheck <- [| getWord16le |] <&> BindS (VarP (mkName "op"))
   guardStmt <- [| guard (op == $(lit)) |] <&> NoBindS
@@ -170,54 +159,42 @@ mkParser f = do
     , FunD name [Clause [] (NormalB body) []]
     ]
   where
-    name = mkName $ f.name <> "Parser"
+    name = mkName $ interfaceName <> "_" <> f.name <> "Parser"
     lit = litE $ integerL $ fromIntegral f.opcode
-
-
-{-mkParser :: Function a -> Parser (Wayland.Types.Wayland ())
-mkParser f = expectBytes (fromIntegral f.opcode) *> 
-
-expectBytes :: BS.ByteString -> Parser BS.ByteString
-expectBytes bs = Parser f
-  where
-    f x = case BS.stripPrefix bs x of
-      Nothing -> Nothing
-      Just y  -> Just (x, y)
--}
 
 loadInterface :: Element -> Q [Dec]
 loadInterface int = do 
 
   events' <- loadF "event"
   requests' <- loadF "request"
-  let definitions = fmap mkFunction events' ++ fmap mkFunction requests'
+  let definitions = fmap (mkFunction name') events' ++ fmap (mkFunction name') requests'
 
-  let parserChain = mkParserChain events'
-  let reqParserChain = mkParserChain requests'
+  let parserChain = mkParserChain name' events'
+  let reqParserChain = mkParserChain name' requests'
 
   concat <$> sequence [
     -- Version
       [d| $(varP (mkName $ name' <> "Version")) = $(pure . LitE . IntegerL $ version') |]
     -- Class definition
-    , pure [mkClass (name' <> "D") ["a"] definitions]
+    , pure [mkClass ("Interface_" <> name') ["a"] definitions]
     -- Event Parsers
-    , concat <$> mapM mkParser events'
-    , (singleton) <$> ([t| Parser (Wayland ()) |] <&> SigD eventParserName)
+    , concat <$> mapM (mkParser name') events'
+    , (singleton) <$> ([t| Get (Wayland ()) |] <&> SigD eventParserName)
     , [d|
       $(varP eventParserName) = $(parserChain)
       |]
     -- Request Parsers
-    , concat <$> mapM mkParser requests'
-    , (singleton) <$> ([t| Parser (Wayland ()) |] <&> SigD requestParserName)
+    , concat <$> mapM (mkParser name') requests'
+    , (singleton) <$> ([t| Get (Wayland ()) |] <&> SigD requestParserName)
     , [d|
       $(varP requestParserName) = $(reqParserChain)
       |]
     -- Enums
-    , pure $ concatMap (uncurry mkEnum) enums'
+    , pure $ concatMap (uncurry $ mkEnum name') enums'
     ]
   where
-    eventParserName = mkName $ (name' <> "EventParser")
-    requestParserName = mkName $ (name' <> "RequestParser")
+    eventParserName = mkName $ "eventParser_" <> name'
+    requestParserName = mkName $ "requestParser_" <> name'
     name' = fromJust $ findAttr (qname "name") int
     loadF x = mapM (uncurry loadFunction) $ zip [0..] $ findChildren (qname x) int
     version' = read . fromJust $ findAttr (qname "version") int
