@@ -14,6 +14,22 @@ import Network.Socket (Socket)
 import Relude hiding (ByteString, get, put)
 import SaywaylandTH
 
+-- Constants {{{
+
+-- | The header size is always 8 in Wayland.
+headerSize :: Word16
+headerSize = 8
+
+-- | Constant representing the Wayland null, which is just 0.
+waylandNull :: WlUint
+waylandNull = 0
+
+-- | Constant representing the wl_display ID which is always 1 in Wayland.
+wlDisplayID :: Word32
+wlDisplayID = 1
+
+-- }}}
+
 -- Types {{{
 
 -- | Wayland Uint
@@ -59,6 +75,7 @@ instance Binary WlString where
     let paddingBytes = roundLength (fromIntegral $ BSL.length str) - BSL.length str
     replicateM_ (fromIntegral paddingBytes) (putWord8 0)
 
+{-
 -- | Every interface that can appear as the object of a Wayland event.
 data WaylandInterface
   = WlSurface
@@ -75,16 +92,7 @@ data WaylandInterface
   | ExtWorkspaceHandleV1
   | ExtWorkspaceGroupHandleV1
   deriving stock (Show)
-
-type role ObjectID phantom
-
--- | Phantom type representing an ID of an object.
-newtype ObjectID (a :: WaylandInterface) = ObjectID {id :: WlUint}
-  deriving newtype (Num, Show)
-
-instance Binary (ObjectID a) where
-  get = ObjectID <$> get
-  put (ObjectID x) = put x
+-}
 
 type role WlArray representational
 
@@ -130,7 +138,7 @@ instance Binary WlColorFormat where
       (0 :: WlUint) -> pure Argb8888
       1 -> pure Xrgb8888
       n -> pure $ UnknownColorFormat n
-
+{-
 $( declareEvents
      --
      [ event "WlDisplay" 0 "error" [("errorObjectID", ty ''WlUint), ("errorCode", ty ''WlUint), ("errorMessage", ty ''WlString)]
@@ -162,10 +170,10 @@ $( declareEvents
      , --
        event "WlBuffer" 0 "release" []
      ]
- )
+ )-}
 
 -- | Globals storage by name.
-type Globals = Map WlUint (Header, BodyWlRegistry_global)
+--type Globals = Map WlUint (Header, BodyWlRegistry_global)
 
 {- | Record containing the essential state needed for Wayland.
 The state contained is only essential, the user is expected to make their own structures
@@ -195,12 +203,12 @@ data ClientEnvironment i = ClientEnvironment
 type WaylandM i p = ReaderT (WaylandEnv i p) IO
 
 -- | Type representing a Wayland buffer.
-data Buffer = Buffer
+{-data Buffer = Buffer
   { id :: ObjectID 'WlBuffer
   , offset :: WlInt
   -- ^ Memory offset of the buffer.
   }
-
+-}
 -- | Type representing a Wayland header.
 data Header = Header
   { objectID :: WlID
@@ -227,3 +235,4 @@ instance ToText Header where
     mconcat ["-- wl_header: objectID=", show objectID, " opCode=", show opCode, " size=", show size]
 
 -- }}}
+-- vim: foldmethod=marker

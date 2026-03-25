@@ -350,57 +350,12 @@ bindToInterface registryID globalsRef targetInterface waylandInterface =
       let target = targetInterface <> "\0"
        in find (\(_, e) -> target.unWlString `BSL.isPrefixOf` e.interface.unWlString) globals >>= Just . snd
 -}
--- | The header size is always 8 in Wayland.
-headerSize :: Word16
-headerSize = 8
-
--- | Constant representing the Wayland null, which is just 0.
-waylandNull :: WlUint
-waylandNull = 0
-
--- | Constant representing the wl_display ID which is always 1 in Wayland.
-wlDisplayID :: ObjectID 'WlDisplay
-wlDisplayID = 1
 
 {- | Convert a WlString to text while stripping null terminators.
 | Simply using 'show' does not strip null terminators.
 -}
 wlToText :: WlString -> Text
 wlToText = decodeUtf8 . BSL.toStrict . BSL.takeWhile (/= 0) . (.unWlString)
-
-{- | Convenience function for formatting events.
-Events are colored in magenta following the wayland.app colorscheme.
--}
-strReq :: (Text, ObjectID a, Text) -> Text -> IO ()
-strReq (object, objectID, method) text = do
-  colorize <- getColorize
-  putTextLn . colorize Vivid Magenta $ mconcat ["        -> ", object, "@", show objectID, ".", method, ": ", text]
-  where
-    getColorize :: (IsString s, Semigroup s) => IO (ColorIntensity -> Color -> s -> s)
-    getColorize = do
-      ansiSupport <- hNowSupportsANSI stdout
-      pure
-        $ if ansiSupport
-          then \ci c t -> fromString (setSGRCode [SetColor Foreground ci c]) <> t <> fromString (setSGRCode [Reset])
-          else const $ const id
-
-{- | Convenience function for formatting a Wayland message.
-It takes an objectID, operation code and a message body.
-The header is generated based on this, the size is derived automatically.
--}
-mkMessage :: ObjectID a -> Word16 -> BSL.ByteString -> BSL.ByteString
-mkMessage objectID opCode messageBody =
-  runPut $ do
-    put $ Header objectID.id opCode (headerSize + fromIntegral (BSL.length messageBody))
-    putLazyByteString messageBody
-
-{- | Convenience function for sending a Wayland message.
-See 'mkMessage'.
--}
-sendMessage :: ObjectID a -> Word16 -> BSL.ByteString -> Wayland ()
-sendMessage objectID opCode messageBody = do
-  wlSocket <- asks (.socket)
-  liftIO . sendAll wlSocket $ mkMessage objectID opCode messageBody
 
 {- | Connect to the Wayland socket.
 The socket path is $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY

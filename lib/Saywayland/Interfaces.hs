@@ -1,17 +1,34 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Saywayland.Interfaces where
 
-import Relude
-import Protocol
+import Relude hiding (get,put)
+import Protocol hiding (ObjectID)
 --import Saywayland.Protocol
 import Saywayland.Types
 import Language.Haskell.TH (Type(ConT))
 
+import Data.ByteString.Lazy qualified as BSL
 import Data.Map qualified as Map
-import Data.Binary.Put (runPut)
-
+import Data.Binary.Put (runPut, putLazyByteString)
+--import Network.Socket.ByteString
+import Data.Binary (Binary (get, put))
+import Network.Socket.ByteString.Lazy (sendAll)
+import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
 --data ClientWL_display = ClientWL_display {}
 --data ServerWL_display = ServerWL_display {}
+
+-- ObjectID Type {{{
+type role ObjectID phantom
+
+-- | Phantom type representing an ID of an object.
+newtype ObjectID (a :: Interface) = ObjectID {id :: WlUint}
+  deriving newtype (Num, Show)
+
+instance Binary (ObjectID a) where
+  get = ObjectID <$> get
+  put (ObjectID x) = put x
+-- }}}
+
 
 -- Interfaces {{{
 data WL_display = WL_display {}
@@ -41,10 +58,44 @@ newObject intId int = do
     ClientEnv env <- ask
     liftIO $ modifyIORef env.objects (Map.insert intId int)
     pure int
+
+{- | Convenience function for sending a Wayland message.
+See 'mkMessage'.
+-}
+sendMessage :: Word32 -> Word16 -> BSL.ByteString -> Wayland 'Client ()
+sendMessage objectID opCode messageBody = do
+  wlSocket <- asks (\(ClientEnv env) -> env.socket)
+  liftIO . sendAll wlSocket $ mkMessage objectID opCode messageBody
+
+{- | Convenience function for formatting a Wayland message.
+It takes an objectID, operation code and a message body.
+The header is generated based on this, the size is derived automatically.
+-}
+mkMessage :: Word32 -> Word16 -> BSL.ByteString -> BSL.ByteString
+mkMessage objectID opCode messageBody =
+  runPut $ do
+    put $ Header (fromIntegral objectID) opCode (headerSize + fromIntegral (BSL.length messageBody))
+    putLazyByteString messageBody
+
+{- | Convenience function for formatting events.
+Events are colored in magenta following the wayland.app colorscheme.
+-}
+strReq :: (Text, ObjectID a, Text) -> Text -> IO ()
+strReq (object, objectID, method) text = do
+  colorize <- getColorize
+  putTextLn . colorize Vivid Magenta $ mconcat ["        -> ", object, "@", show objectID, ".", method, ": ", text]
+  where
+    getColorize :: (IsString s, Semigroup s) => IO (ColorIntensity -> Color -> s -> s)
+    getColorize = do
+      ansiSupport <- hNowSupportsANSI stdout
+      pure
+        $ if ansiSupport
+          then \ci c t -> fromString (setSGRCode [SetColor Foreground ci c]) <> t <> fromString (setSGRCode [Reset])
+          else const $ const id
+
 -- }}}
 
 -- WL_display {{{
-wlDisplayID = 1
 
 instance Interface_wl_display WL_display Client where
   wl_display_sync callbackId self = do
@@ -54,13 +105,12 @@ instance Interface_wl_display WL_display Client where
   wl_display_get_registry registryID self = do
     ClientEnv env <- ask
     modifyIORef env.objects (Map.insert registryID (WLRegistry WL_registry {}))
-    {- TODO:
-    let messageBody = runPut $ put registryID
-    sendMessage wlDisplayID 1 messageBody
-    liftIO . strReq ("wl_display", wlDisplayID, "get_registry") $ "wl_registry=" <> show registryID
-    return $ coerce registryID
-    -}
-  wl_display_error objectId code message self = do
+
+    let body = runPut $ wl_display_get_registryBuilder (AdditionalParserData []) registryID
+    let opcode = wl_display_get_registryOpcode
+    sendMessage wlDisplayID opcode body
+    liftIO . strReq ("wl_display", fromIntegral wlDisplayID, "get_registry") $ "wl_registry=" <> show registryID
+  wl_display_error objectId code message _self = do
     liftIO $ print $ "Unhandled error from `" <> show objectId <> "`: [" <> show code <> "] " <> message
   wl_display_delete_id objectId _self = do
     ClientEnv env <- ask

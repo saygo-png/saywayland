@@ -51,8 +51,12 @@ constructType (x:xs) = AppT (AppT ArrowT x) $ constructType xs
 -- example output:
 -- functionName -> Arg1 -> Arg2 -> a -> W ()
 mkFunction :: Type -> String -> Function a -> Dec
-mkFunction monad interfaceName f = SigD (mkName $ functCase interfaceName <> "_" <> f.name) $ constructType $ f.fType 
-    <> [VarT (mkName "a"), AppT (AppT monad $ VarT $ mkName "p") $ TupleT 0]
+mkFunction monad interfaceName f = SigD (mkName $ functCase interfaceName <> "_" <> f.name) $ constructType $ f.fType
+                                    <> [VarT (mkName "a"), AppT (AppT monad $ VarT $ mkName "p") $ TupleT 0]
+
+mkOpcode :: String -> Function a -> Dec
+mkOpcode interfaceName f = FunD (mkName $ interfaceName <> "_" <> f.name <> "Opcode") [Clause [] (NormalB $ LitE $ IntegerL $ fromIntegral f.opcode) []]
+
 mkBuilder :: String -> Function a -> Q [Dec]
 mkBuilder interfaceName f = do 
   (argNames, argStmts) <- genBindsPut f.fType adata
@@ -217,7 +221,7 @@ loadInterface monad int = do
   events' <- loadF "event"
   requests' <- loadF "request"
   let definitions = fmap (mkFunction monad name') requests' ++ fmap (mkFunction monad name') events'
-
+  let opcodes = fmap (mkOpcode name') requests' ++ fmap (mkOpcode name') events'
   let builders = ((++) <$> mapM (mkBuilder name') requests' <*> mapM (mkBuilder name') events') <&> concat
 
   parserChain <- mkParserChain name' events'
@@ -240,7 +244,10 @@ loadInterface monad int = do
     , pure [parserChainD]
     -- Enums
     , pure $ concatMap (uncurry $ mkEnum name') enums'
+    -- Builders
     , builders
+    -- Opcodes
+    , pure opcodes
     ]
   where
     a = varT $ mkName "a"
