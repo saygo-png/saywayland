@@ -191,11 +191,16 @@ data ServerEnvironment i = ServerEnvironment
     socket  :: Socket
   , clients :: IORef [ClientEnvironment i]
   }
+
+-- | Unique name given to an interface.
+type InterfaceName = Word32
+
 data ClientEnvironment i = ClientEnvironment
   {
     socket  :: Socket
   , counter :: IORef Word32
   , objects :: IORef (Map Word32 i)
+  , globals :: IORef (Map {-global name-}Word32 i)
   }
 
 -- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.

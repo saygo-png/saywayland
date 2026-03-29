@@ -32,19 +32,7 @@ import Saywayland.Interfaces
 
 -- Requests {{{
 
--- | https://wayland.app/protocols/wayland#wl_display:request:get_registry
 {-
-wlDisplay_getRegistry :: Wayland (ObjectID 'WlRegistry)
-wlDisplay_getRegistry = do
-  env <- ask
-  registryID <- nextID env.counter
-  -- The object here is actually saved before the request is sent
-  -- This is because the registry id is needed for parsing its requests/events
-  modifyIORef env.objects (Map.insert registryID WlRegistry)
-  let messageBody = runPut $ put registryID
-  sendMessage wlDisplayID 1 messageBody
-  liftIO . strReq ("wl_display", wlDisplayID, "get_registry") $ "wl_registry=" <> show registryID
-  return $ coerce registryID
 
 -- | https://wayland.app/protocols/wayland#wl_shm:request:create_pool
 wlShm_createPool :: ObjectID 'WlShm -> Fd -> WlInt -> Wayland (ObjectID 'WlShmPool)
