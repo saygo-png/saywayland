@@ -23,8 +23,28 @@ import System.Directory (listDirectory)
 import System.FilePath (takeExtension, (</>))
 
 import Text.XML.Light
+import Data.Data (Proxy(Proxy))
 
 type ObjectID = Word32
+
+
+genProtocol :: Name -> Name -> [(String, Name, Name)] -> Dec
+genProtocol protocolName interfaceSetName bindings = InstanceD
+  Nothing
+  []
+  (AppT (ConT protocolName) (ConT interfaceSetName))
+  $ concatMap genBinding bindings
+  where
+    genBinding :: (String, Name, Name) -> [Dec]
+    genBinding (typesuffix, btype, packed) = [
+        -- type Type_typesuffix = btype
+        TySynInstD $ TySynEqn Nothing (AppT (ConT $ mkName $ "Type_" <> typesuffix) (ConT interfaceSetName)) (ConT btype)
+        -- get_type_suffix = defM
+      , FunD (mkName $ "get_" <> typesuffix) [Clause [WildP] (NormalB . VarE $ mkName "defM") []]
+        -- pack_type_suffix = packed
+      , FunD (mkName $ "pack_" <> typesuffix) [Clause [] (NormalB $ ConE packed) []]
+      ]
+
 
 -- Getters/Putters {{{
 getString :: Get BS.ByteString
@@ -130,7 +150,7 @@ constructType (x:xs) = AppT (AppT ArrowT x) $ constructType xs
 -- | Returns a function signature declaration for the provided `Function`.
 mkFunction :: Type -> String -> Function a -> Dec
 mkFunction monad interfaceName f = SigD (mkName $ functCase interfaceName <> "_" <> f.name) $ constructType $ f.fType
-                                    <> [VarT (mkName "a"), AppT (AppT monad $ VarT $ mkName "p") $ TupleT 0]
+                                    <> [VarT (mkName "a"), AppT (AppT (AppT monad $ VarT $ mkName "i") $ VarT $ mkName "p") $ TupleT 0]
 
 -- | Returns a declaration of the `Function`s opcode as an integer variable.
 mkOpcode :: String -> Function a -> [Dec]
@@ -176,6 +196,11 @@ mkParserChain _ [] = [e|undefined|]--[e| Parser <$> const Nothing |]
 -- }}}
 
 -- Data Types {{{
+
+class InterfaceSet i where
+  interfaceByStringName :: BS.ByteString -> IO i
+  hasObject :: i -> BS.ByteString -> Bool
+
 -- | Differentiates between requests and events
 data FunctionType = Event | Request
 -- | A Function data type, used to pass data read from XML spec.
@@ -196,6 +221,33 @@ data AdditionalParserData = AdditionalParserData {
 -- }}}
 
 -- Loading from File {{{
+
+-- | Define a parser for the opcode (last 2 bytes of the header) and the body of a message for the given request/event.
+mkParser :: Type -> String -> Function a -> Q [Dec]
+mkParser monad interfaceName f = do
+  (argNames, argStmts) <- genBindsGet f.fType adata
+  opCheck <- [| getWord16le |] <&> BindS (VarP (mkName "op"))
+  guardStmt <- [| guard (op == $(lit)) |] <&> NoBindS
+  let func = VarE $ mkName $ functCase interfaceName <> "_" <> f.name
+      args = map VarE argNames
+      ret  = NoBindS $ AppE (VarE (mkName "pure")) (foldl AppE func args)
+  --ret <- [| $(f.name) $(argNameList)|] <&> NoBindS
+  let body = DoE Nothing (opCheck : guardStmt : argStmts ++ [ret])
+  pure
+    --     name:: InterfaceNameD -> AdditionalParserData -> Get (Interface (a) -> Wayland i p ())
+    [ SigD name (ForallT 
+          [PlainTV (mkName "a") SpecifiedSpec, PlainTV (mkName "i") SpecifiedSpec, PlainTV (mkName "p") SpecifiedSpec]
+          [AppT (AppT (AppT (ConT $ mkName $ "Interface_" <> interfaceName) (VarT (mkName "a"))) (VarT (mkName "i"))) (VarT (mkName "p")), AppT (ConT ''InterfaceSet) (VarT (mkName "i"))]
+          $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''Get) $ AppT (AppT ArrowT $ VarT $ mkName "a") (AppT (AppT (AppT monad $ VarT $ mkName "i") $ VarT $ mkName "p") (TupleT 0))))
+    , FunD name [Clause [VarP adata] (NormalB body) []]
+    ]
+  where
+    name = mkName $ interfaceName <> "_" <> f.name <> "Parser"
+    lit = litE $ integerL $ fromIntegral f.opcode
+
+
+
+
 {- | Loads all .xml files in `path` as protocols.
 Set `isIO` to True only when running the function within an IO monad. This should be used *only* for debugging purposes.
 `monad` defines the monad in which all events and requests operate in.
@@ -211,32 +263,28 @@ loadProtocolFile monad isIO path = do
   unless isIO $ addDependentFile path
   protocols <- filter ((== qname "protocol") . elName) . onlyElems . parseXML <$> runIO (BS.readFile path)
   runIO $ print protocols
-  concat <$> mapM 
-    ((<&> concat) . mapM (loadInterface monad) . findChildren (qname "interface"))
+  let name = fromJust . findAttr (qname "name")
+  let findInterfaces = findChildren (qname "interface")
+  let protocolDefinitions = fmap (\protocol ->
+        mkClass ("Protocol_" <> name protocol) ["i"] $
+          concatMap (\interface -> 
+            let
+              vi = VarT $ mkName "i"
+              typename = (mkName $ "Type_" <> name interface)
+            in [
+              {-type Type_interface i-}
+              OpenTypeFamilyD (TypeFamilyHead typename [PlainTV (mkName "i") BndrReq] NoSig Nothing)
+              {-get_interface :: Proxy i -> IO (WlCallbackType i)-}
+            , SigD (mkName $ "get_" <> name interface) $ AppT (AppT ArrowT (AppT (ConT ''Proxy) vi))
+              (AppT (ConT ''IO) $ AppT (ConT typename) vi)
+              {-pack_wl_callback :: WlCallbackType i -> i-}
+            , SigD (mkName $ "pack_" <> name interface) $ AppT (AppT ArrowT (AppT (ConT typename) vi)) vi
+            ]
+          ) $ findInterfaces protocol
+        ) protocols
+  (protocolDefinitions ++) . concat <$> mapM 
+    ((<&> concat) . mapM (loadInterface monad) . findInterfaces)
     protocols
-
--- | Define a parser for the opcode (last 2 bytes of the header) and the body of a message for the given request/event.
-mkParser :: Type -> String -> Function a -> Q [Dec]
-mkParser monad interfaceName f = do
-  (argNames, argStmts) <- genBindsGet f.fType adata
-  opCheck <- [| getWord16le |] <&> BindS (VarP (mkName "op"))
-  guardStmt <- [| guard (op == $(lit)) |] <&> NoBindS
-  let func = VarE $ mkName $ functCase interfaceName <> "_" <> f.name
-      args = map VarE argNames
-      ret  = NoBindS $ AppE (VarE (mkName "pure")) (foldl AppE func args)
-  --ret <- [| $(f.name) $(argNameList)|] <&> NoBindS
-  let body = DoE Nothing (opCheck : guardStmt : argStmts ++ [ret])
-  pure
-    --     name:: InterfaceNameD -> AdditionalParserData -> Get (Interface (a) -> Wayland p ())
-    [ SigD name (ForallT 
-          [PlainTV (mkName "a") SpecifiedSpec, PlainTV (mkName "p") SpecifiedSpec]
-          [AppT (AppT (ConT $ mkName $ "Interface_" <> interfaceName) (VarT (mkName "a"))) (VarT (mkName "p"))]
-          $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''Get) $ AppT (AppT ArrowT $ VarT $ mkName "a") (AppT (AppT monad $ VarT $ mkName "p") (TupleT 0))))
-    , FunD name [Clause [VarP adata] (NormalB body) []]
-    ]
-  where
-    name = mkName $ interfaceName <> "_" <> f.name <> "Parser"
-    lit = litE $ integerL $ fromIntegral f.opcode
 
 -- | Create all definitions for a single interface - version, the class, parsers, builders, enums, opcodes,
 loadInterface :: Type -> Element -> Q [Dec]
@@ -257,14 +305,16 @@ loadInterface monad int = do
     -- Version
       [d| $(varP (mkName $ name' <> "Version")) = $(pure . LitE . IntegerL $ version') |]
     -- Class definition
-    , pure [mkClass ("Interface_" <> name') ["a", "p"] definitions]
+    , pure [mkClass ("Interface_" <> name') ["a", "i", "p"] definitions]
     -- Request Parsers
     , concat <$> mapM (mkParser monad name') requests'
-    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a $(pure . VarT $ mkName "p") => AdditionalParserData -> Get ($a -> $(pure monad) $(pure . VarT $ mkName "p") ()) |] <&> SigD requestParserName)
+    , singleton <$> ([t| ($(conT . mkName $ "Interface_" <> name') $a $(pure . VarT $ mkName "i") $(pure . VarT $ mkName "p"), InterfaceSet $(pure . VarT $ mkName "i")) =>
+        AdditionalParserData -> Get ($a -> $(pure monad) $(pure . VarT $ mkName "i") $(pure . VarT $ mkName "p") ()) |] <&> SigD requestParserName)
     , pure [reqParserChainD]
     -- Event Parsers
     , concat <$> mapM (mkParser monad name') events'
-    , singleton <$> ([t| $(conT . mkName $ "Interface_" <> name') $a $(pure . VarT $ mkName "p") => AdditionalParserData -> Get ($a -> $(pure monad) $(pure . VarT $ mkName "p") ()) |] <&> SigD eventParserName)
+    , singleton <$> ([t| ($(conT . mkName $ "Interface_" <> name') $a $(pure . VarT $ mkName "i") $(pure . VarT $ mkName "p"), InterfaceSet $(pure . VarT $ mkName "i")) =>
+        AdditionalParserData -> Get ($a -> $(pure monad) $(pure . VarT $ mkName "i") $(pure . VarT $ mkName "p") ()) |] <&> SigD eventParserName)
     , pure [parserChainD]
     -- Builders
     , builders
