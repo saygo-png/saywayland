@@ -37,7 +37,7 @@ data WL_display = WL_display {wlid :: Word32}
 data WL_registry = WL_registry {wlid :: Word32}
 data WL_callback = WL_callback {wlid :: Word32}
 data WL_compositor = WL_compositor {wlid :: Word32}
-data WL_shm_pool = WL_shm_pool {wlid :: Word32, fd :: Fd, size :: Int}
+data WL_shm_pool = WL_shm_pool {wlid :: Word32, fd :: Fd, size :: IORef Int}
 data WL_shm = WL_shm {wlid :: Word32, formats :: IORef [Int]}
 data WL_surface = WL_surface {wlid :: Word32}
 
@@ -63,7 +63,7 @@ instance DefaultIO WL_callback where
 instance DefaultIO WL_compositor where
   defM = pure WL_compositor {wlid=0}
 instance DefaultIO WL_shm_pool where
-  defM = pure WL_shm_pool {wlid=0,fd=0,size=0}
+  defM = newIORef 0 <&> WL_shm_pool 0 0 
 instance DefaultIO WL_shm where
   defM = newIORef [] <&> WL_shm 0
 instance DefaultIO WL_surface where
@@ -115,11 +115,11 @@ newObject intId int = do
 {- | Convenience function for sending a Wayland message.
 See 'mkMessage'.
 -}
-sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland 'Client ()
+sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> WaylandM i 'Client ()
 sendMessageWithFds fds objectID opCode messageBody = do
   socket <- asks (\(ClientEnv env) -> env.socket)
   liftIO $ sendManyWithFds socket [BS.toStrict $ mkMessage objectID opCode messageBody] fds
-sendMessage :: Word32 -> Word16 -> BSL.ByteString -> Wayland 'Client ()
+sendMessage :: Word32 -> Word16 -> BSL.ByteString -> WaylandM i 'Client ()
 sendMessage objectID opCode messageBody = do
   wlSocket <- asks (\(ClientEnv env) -> env.socket)
   liftIO . sendAll wlSocket $ mkMessage objectID opCode messageBody
@@ -158,30 +158,27 @@ strReq (object, objectID, method) text = do
 -- WL_display {{{
 instance
         (Protocol_wayland i
-        , DefaultIO (Type_wl_registry i)
-        , DefaultIO (Type_wl_callback i)
         , HasWlid (Type_wl_callback i) Word32
         ) => Interface_wl_display WL_display i Client where
-  wl_display_sync callbackId self = do
+  wl_display_sync callbackId _self = do
     ClientEnv _env <- ask
     callback <- liftIO $ get_wl_callback (Proxy @i)
-    int <- newObject callbackId $ pack_wl_callback callback
+    _int <- newObject callbackId $ pack_wl_callback callback
     pure ()
-  wl_display_get_registry registryID self = do
+  wl_display_get_registry registryID _self = do
     ClientEnv env <- ask
     registry <- liftIO $ get_wl_registry (Proxy @i)
     modifyIORef env.objects (Map.insert registryID $ pack_wl_registry registry)
 
     let body = runPut $ wl_display_get_registryBuilder (AdditionalParserData []) registryID
     let opcode = wl_display_get_registryOpcode
-    --sendMessage wlDisplayID opcode body
+    sendMessage wlDisplayID opcode body
     liftIO . strReq ("wl_display", wlDisplayID, "get_registry") $ "wl_registry=" <> show registryID
   wl_display_error objectId code message _self = do
     liftIO $ print $ "Unhandled error from `" <> show objectId <> "`: [" <> show code <> "] " <> message
   wl_display_delete_id objectId _self = do
     ClientEnv env <- ask
     liftIO $ modifyIORef env.objects (Map.delete objectId)
-
 
 instance Interface_wl_display WL_display i Server where
   wl_display_sync callbackId self = {-HANDLE sync request-} undefined
@@ -191,14 +188,22 @@ instance Interface_wl_display WL_display i Server where
 -- }}}
 
 -- WL_registry {{{
-instance Interface_wl_registry WL_registry i Client where
-  wl_registry_bind name interfaceName interfaceVersion newID self = do
+instance InterfaceSet i => Interface_wl_registry WL_registry i Client where
+  wl_registry_bind name interfaceName interfaceVersion newID _self = do
     --TODO: append `interfaceFromName name` to client interfaces
     let body = runPut $ wl_registry_bindBuilder (AdditionalParserData []) name interfaceName interfaceVersion newID
-    --sendMessage newID wl_registry_bindOpcode body
+    sendMessage newID wl_registry_bindOpcode body
     liftIO . strReq ("wl_registry", newID, "registry_bind") $ "name: " <> show name <> " newID: " <> show interfaceName <> ", " <> show interfaceVersion <> ", " <> show newID
-  wl_registry_global name interfaceName interfaceVersion self = undefined
-  wl_registry_global_remove name = undefined
+  wl_registry_global name interfaceName _interfaceVersion _self = do
+    -- likely this requires a version check, like this maybe:
+    -- liftIO $ unless (wl_registryVersion == fromIntegral _interfaceVersion) (putStrLn $ "warning: WL_registry version mismatch: [compositor " <> show _interfaceVersion <> "], client [" <> show wl_registryVersion <> "]")
+    int <- liftIO $ interfaceByStringName interfaceName
+    ClientEnv env <- ask
+    modifyIORef env.globals $ Map.insert name int
+  wl_registry_global_remove name _self = do
+    ClientEnv env <- ask
+    modifyIORef env.globals $ Map.delete name
+
 instance Interface_wl_registry WL_registry i Server where
 -- }}}
 
@@ -216,14 +221,14 @@ instance Interface_wl_shm_pool WL_shm_pool i Client where
     ClientEnv env <- ask
     modifyIORef env.objects $ Map.delete self.wlid
     let body = runPut $ wl_shm_pool_destroyBuilder (AdditionalParserData [])
-    --sendMessage self.wlid wl_shm_pool_destroyOpcode body
+    sendMessage self.wlid wl_shm_pool_destroyOpcode body
     liftIO $ strReq ("wl_shm_pool", self.wlid, "wl_shm_pool_destroy") ""
-  wl_shm_pool_resize size self = undefined
+  wl_shm_pool_resize new_size self = do
+    writeIORef self.size new_size
 -- }}}
 
 -- WL_shm {{{
 instance (Protocol_wayland i
-        , DefaultIO (Type_wl_shm_pool i)
         , HasWlid (Type_wl_shm_pool i) Word32
         , HasFd (Type_wl_shm_pool i) Fd
         , HasSize (Type_wl_shm_pool i) Int
@@ -237,13 +242,13 @@ instance (Protocol_wayland i
       , size = size
       }-}
     let body = runPut $ wl_shm_create_poolBuilder (AdditionalParserData [fd]) poolId fd size
-    --sendMessageWithFds [fd] self.wlid wl_shm_create_poolOpcode body
+    sendMessageWithFds [fd] self.wlid wl_shm_create_poolOpcode body
     liftIO $ strReq ("wl_shm", self.wlid, "wl_shm_create_pool") $ "poolId: " <> show poolId <> " fd: " <> show fd <> " size: " <> show size
   wl_shm_release self = do
     ClientEnv env <- ask
     modifyIORef env.objects $ Map.delete self.wlid
     let body = runPut $ wl_shm_releaseBuilder (AdditionalParserData [])
-    --sendMessage self.wlid wl_shm_releaseOpcode body
+    sendMessage self.wlid wl_shm_releaseOpcode body
     liftIO $ strReq ("wl_shm", self.wlid, "wl_shm_release") ""
   wl_shm_format format self = modifyIORef self.formats (fromIntegral format:)
 -- }}}
