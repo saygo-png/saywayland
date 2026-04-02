@@ -28,43 +28,31 @@ import Data.Data (Proxy(Proxy))
 type ObjectID = Word32
 
 
-genProtocol :: Name -> Name -> [(String, Name, Name)] -> Dec
-genProtocol protocolName interfaceSetName bindings = InstanceD
-  Nothing
-  []
-  (AppT (ConT protocolName) (ConT interfaceSetName))
-  $ concatMap genBinding bindings
-  where
-    genBinding :: (String, Name, Name) -> [Dec]
-    genBinding (typesuffix, btype, packed) = [
-        -- type Type_typesuffix = btype
-        TySynInstD $ TySynEqn Nothing (AppT (ConT $ mkName $ "Type_" <> typesuffix) (ConT interfaceSetName)) (ConT btype)
-        -- get_type_suffix = defM
-      , FunD (mkName $ "get_" <> typesuffix) [Clause [WildP] (NormalB . VarE $ mkName "defM") []]
-        -- pack_type_suffix = packed
-      , FunD (mkName $ "pack_" <> typesuffix) [Clause [] (NormalB $ ConE packed) []]
-      ]
-
 
 -- Getters/Putters {{{
+-- | Get a Wire-encoded String
 getString :: Get BS.ByteString
 getString = do 
   len <- getWord32le
-  str <- getBytes $ fromIntegral len
+  str <- getByteString $ fromIntegral len
       --str = BS.take len (BS.drop 4 bytes)
   let padding = (4 - (len `mod` 4)) `mod` 4
-  _ <- getBytes $ fromIntegral padding
+  _ <- getByteString $ fromIntegral padding
   pure str
 
+-- | Get a Wire-encoded Fixed
 getFixed24_8 :: Get Double
 getFixed24_8 = getInt32be <&> (/ 256.0) . fromIntegral
 
+-- | Put a Wire-encoded Fixed
 putFixed24_8 :: Double -> Put
 putFixed24_8 d = putInt32be $ fromIntegral $ round $ d * 256
 
+-- | Get an Fd from previously obtained Ancillary data
 getFd :: AdditionalParserData -> Get Fd
 getFd dat = pure $ head dat.fds
 
+-- | return a TH getter expression for a given Type
 getForType :: Type -> Q Exp
 getForType t = case t of
   ConT name
@@ -76,6 +64,7 @@ getForType t = case t of
     | name == ''Fd        -> [| getFd |]
   _ -> error $ "unsupported type" <> show t
 
+-- | return a TH putter expression for a given Type
 putForType :: Type -> Q Exp
 putForType t = case t of
   ConT name
@@ -127,6 +116,26 @@ genBindsPut tys additionaldata = do
 -- }}}
 
 -- TemplateHaskell Utils {{{
+
+-- | a user-side util to generate instance for a specified instance of a given protocol with given bindings
+genProtocol :: Name -> Name -> [(String, Name, Name)] -> Dec
+genProtocol protocolName interfaceSetName bindings = InstanceD
+  Nothing
+  []
+  (AppT (ConT protocolName) (ConT interfaceSetName))
+  $ concatMap genBinding bindings
+  where
+    genBinding :: (String, Name, Name) -> [Dec]
+    genBinding (typesuffix, btype, packed) = [
+        -- type Type_typesuffix = btype
+        TySynInstD $ TySynEqn Nothing (AppT (ConT $ mkName $ "Type_" <> typesuffix) (ConT interfaceSetName)) (ConT btype)
+        -- get_type_suffix = defM
+      , FunD (mkName $ "get_" <> typesuffix) [Clause [WildP] (NormalB . VarE $ mkName "defM") []]
+        -- pack_type_suffix = packed
+      , FunD (mkName $ "pack_" <> typesuffix) [Clause [] (NormalB $ ConE packed) []]
+      ]
+
+
 adata :: Name
 adata = mkName "additionalData"
 
