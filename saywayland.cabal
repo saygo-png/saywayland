@@ -90,3 +90,4 @@ test-suite template-haskell-protocol
     , saywayland
     , unix
     , template-haskell
+    , xml

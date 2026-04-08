@@ -16,7 +16,7 @@ import Network.Socket.ByteString.Lazy (sendAll)
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
 import System.Posix (Fd)
 import Network.Socket.ByteString (sendManyWithFds)
-import Control.Lens (makeFieldsId)
+import Control.Lens (makeFieldsId, (^.))
 import Data.List (singleton)
 -- ObjectID Type {{{
 {-
@@ -37,7 +37,7 @@ data WL_display = WL_display {wlid :: Word32}
 makeFieldsId ''WL_display
 data WL_registry = WL_registry {wlid :: Word32}
 makeFieldsId ''WL_registry
-data WL_callback = WL_callback {wlid :: Word32}
+data WL_callback = WL_callback {wlid :: Word32, done :: MVar ()}
 makeFieldsId ''WL_callback
 data WL_compositor = WL_compositor {wlid :: Word32}
 makeFieldsId ''WL_compositor
@@ -90,7 +90,7 @@ instance DefaultIO WL_display where
 instance DefaultIO WL_registry where
   defM = pure WL_registry {wlid=0}
 instance DefaultIO WL_callback where
-  defM = pure WL_callback {wlid=0}
+  defM = newEmptyMVar <&> WL_callback 0
 instance DefaultIO WL_compositor where
   defM = pure WL_compositor {wlid=0}
 instance DefaultIO WL_shm_pool where
@@ -190,25 +190,31 @@ strReq (object, objectID, method) text = do
 instance
         (Protocol_wayland i
         , HasWlid (Type_wl_callback i) Word32
+        , HasDone (Type_wl_callback i) (MVar ())
         ) => Interface_wl_display WL_display i Client where
   -- requests {{{
-  wl_display_sync callbackId _self = do
-    ClientEnv _env <- ask
+  wl_display_sync callbackId self = do
+    -- create the callback
     callback <- liftIO $ get_wl_callback (Proxy @i)
+    -- register the object, for other threads to access
     _int <- newObject callbackId $ pack_wl_callback callback
-    pure ()
-  wl_display_get_registry registryID _self = do
+    -- send the message
+    let body = runPut $ wl_display_syncBuilder (AdditionalParserData []) callbackId
+    sendMessage self.wlid wl_display_syncOpcode body
+    -- wait until sync request is complete. This might not be the default desired behavior.
+    takeMVar $ callback ^. done
+  wl_display_get_registry registryID self = do
     ClientEnv env <- ask
     registry <- liftIO $ get_wl_registry (Proxy @i)
     modifyIORef env.objects (Map.insert registryID $ pack_wl_registry registry)
 
     let body = runPut $ wl_display_get_registryBuilder (AdditionalParserData []) registryID
     let opcode = wl_display_get_registryOpcode
-    sendMessage wlDisplayID opcode body
+    sendMessage self.wlid opcode body
     liftIO . strReq ("wl_display", wlDisplayID, "get_registry") $ "wl_registry=" <> show registryID
   -- }}}
   -- events {{{
-  wl_display_error objectId code message _self = do
+  wl_display_error objectId code message self = do
     liftIO $ print $ "Unhandled error from `" <> show objectId <> "`: [" <> show code <> "] " <> message
   wl_display_delete_id objectId _self = do
     ClientEnv env <- ask
@@ -258,10 +264,26 @@ instance Interface_wl_callback WL_callback i Client where
 -- WL_compositor {{{
 instance Interface_wl_compositor WL_compositor i Client where
   -- requests {{{
+  wl_compositor_create_surface surfaceId self = do
+    let body = runPut $ wl_compositor_create_surfaceBuilder (AdditionalParserData []) surfaceId
+    let opcode = wl_compositor_create_surfaceOpcode
+    sendMessage self.wlid wl_compositor_create_surfaceOpcode body
+  wl_compositor_create_region regionId self = do
+    let body = runPut $ wl_compositor_create_regionBuilder (AdditionalParserData []) regionId
+    sendMessage self.wlid wl_compositor_create_regionOpcode body
+  wl_compositor_release self = do
+    let body = runPut $ wl_compositor_releaseBuilder (AdditionalParserData [])
+    sendMessage self.wlid wl_compositor_create_regionOpcode body
+  -- }}}
+
+{-
+instance Interface_wl_compositor WL_compositor i Server where
+  -- requests {{{
   wl_compositor_create_surface surfaceId self = undefined
   wl_compositor_create_region regionId self = undefined
   wl_compositor_release self = undefined
   -- }}}
+-}
 -- }}}
 
 -- WL_shm_pool {{{
