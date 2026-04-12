@@ -56,8 +56,9 @@ library
   exposed-modules:
     Saywayland
     Saywayland.Types
-    Saywayland.Interfaces
     Saywayland.WaylandSocket
+    Saywayland.Protocols.Wayland
+    Saywayland.Interfaces
     SaywaylandTH
     Protocol
 

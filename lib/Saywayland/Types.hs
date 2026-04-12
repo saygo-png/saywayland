@@ -2,6 +2,7 @@
 
 module Saywayland.Types where
 
+import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
 import Data.Binary
 import Data.Binary.Get hiding (remaining)
 import Data.Binary.Put
@@ -13,6 +14,11 @@ import GHC.Show qualified as GHC
 import Network.Socket (Socket)
 import Relude hiding (ByteString, get, put)
 import SaywaylandTH
+import System.Posix (Fd)
+
+import Data.ByteString qualified as BS
+import Network.Socket.ByteString.Lazy (sendAll)
+import Network.Socket.ByteString (sendManyWithFds)
 
 -- Constants {{{
 
@@ -240,4 +246,60 @@ instance ToText Header where
     mconcat ["-- wl_header: objectID=", show objectID, " opCode=", show opCode, " size=", show size]
 
 -- }}}
+
+
+-- Utils {{{
+newObjectId :: WaylandM i 'Client Word32
+newObjectId = do
+    ClientEnv env <- ask
+    liftIO $ modifyIORef env.counter (+ 1)
+    liftIO $ readIORef env.counter
+
+newObject :: Word32 -> i -> WaylandM i 'Client i
+newObject intId int = do
+    ClientEnv env <- ask
+    liftIO $ modifyIORef env.objects (Map.insert intId int)
+    pure int
+
+{- | Convenience function for sending a Wayland message.
+See 'mkMessage'.
+-}
+sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> WaylandM i 'Client ()
+sendMessageWithFds fds objectID opCode messageBody = do
+  socket <- asks (\(ClientEnv env) -> env.socket)
+  liftIO $ sendManyWithFds socket [BS.toStrict $ mkMessage objectID opCode messageBody] fds
+sendMessage :: Word32 -> Word16 -> BSL.ByteString -> WaylandM i 'Client ()
+sendMessage objectID opCode messageBody = do
+  wlSocket <- asks (\(ClientEnv env) -> env.socket)
+  liftIO . sendAll wlSocket $ mkMessage objectID opCode messageBody
+
+{- | Convenience function for formatting a Wayland message.
+It takes an objectID, operation code and a message body.
+The header is generated based on this, the size is derived automatically.
+-}
+mkMessage :: Word32 -> Word16 -> BSL.ByteString -> BSL.ByteString
+mkMessage objectID opCode messageBody =
+  runPut $ do
+    put $ Header (fromIntegral objectID) opCode (headerSize + fromIntegral (BSL.length messageBody))
+    putLazyByteString messageBody
+
+{- | Convenience function for formatting events.
+Events are colored in magenta following the wayland.app colorscheme.
+-}
+strReq :: (Text, Word32, Text) -> Text -> IO ()
+strReq (object, objectID, method) text = do
+  colorize <- getColorize
+  putTextLn . colorize Vivid Magenta $ mconcat ["        -> ", object, "@", show objectID, ".", method, ": ", text]
+  where
+    getColorize :: (IsString s, Semigroup s) => IO (ColorIntensity -> Color -> s -> s)
+    getColorize = do
+      ansiSupport <- hNowSupportsANSI stdout
+      pure
+        $ if ansiSupport
+          then \ci c t -> fromString (setSGRCode [SetColor Foreground ci c]) <> t <> fromString (setSGRCode [Reset])
+          else const $ const id
+
+-- }}}
+
+
 -- vim: foldmethod=marker

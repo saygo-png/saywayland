@@ -16,7 +16,7 @@ import Saywayland.Interfaces
 -- Listeners {{{
 
 -- | listen for client connections in provided socket.
-listenForClients :: Socket -> Wayland 'Server ()
+listenForClients :: Socket -> WaylandM Interface 'Server ()
 listenForClients sock = do
   env <- ask
   -- NO IMPL: should create WL_display on start.
@@ -29,7 +29,7 @@ listenForClients sock = do
   liftIO $ runReaderT (listenForClients sock) env
 
 -- | handle communication between a server and a client in provided socket, works both on the server and the client.
-clientLoop :: Socket -> Wayland p ()
+clientLoop :: Socket -> WaylandM Interface p ()
 clientLoop sock = undefined
 
 -- do
