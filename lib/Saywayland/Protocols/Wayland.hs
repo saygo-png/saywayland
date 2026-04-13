@@ -2,7 +2,7 @@
 module Saywayland.Protocols.Wayland where
 -- this module imlements some interfaces using classes defined by the `Protocol` module.
 
-import Relude hiding (get,put)
+import Relude hiding (get)
 import Protocol hiding (ObjectID)
 import Saywayland.Types
 import Language.Haskell.TH (Type(ConT))
@@ -10,7 +10,13 @@ import Language.Haskell.TH (Type(ConT))
 import Data.Map qualified as Map
 import Data.Binary.Put (runPut)
 import System.Posix (Fd)
-import Control.Lens (makeFieldsId, (^.))
+import Control.Lens (makeFieldsId, (^.), (.~), (&), set)
+
+
+-- TemplateHaskell Definitions {{{
+$(loadProtocolFile (ConT ''WaylandM) False "protocols/wayland.xml")
+--}}}
+
 
 -- Interfaces {{{
 data WL_display = WL_display {wlid :: Word32}
@@ -25,7 +31,14 @@ data WL_shm_pool = WL_shm_pool {wlid :: Word32, fd :: Fd, size :: IORef Int}
 makeFieldsId ''WL_shm_pool
 data WL_shm = WL_shm {wlid :: Word32, formats :: IORef [Int]}
 makeFieldsId ''WL_shm
-data WL_buffer = WL_buffer {wlid :: Word32}
+data WL_buffer = WL_buffer
+  { wlid    :: Word32
+  , offset  :: Int
+  , width   :: Int
+  , height  :: Int
+  , stride  :: Int
+  , format  :: Enum_wl_shm_format
+  }
 makeFieldsId ''WL_buffer
 data WL_data_offer = WL_data_offer {wlid :: Word32}
 makeFieldsId ''WL_data_offer
@@ -72,18 +85,13 @@ instance DefaultIO WL_callback where
 instance DefaultIO WL_compositor where
   defM = pure WL_compositor {wlid=0}
 instance DefaultIO WL_shm_pool where
-  defM = newIORef 0 <&> WL_shm_pool 0 0 
+  defM = newIORef 0 <&> WL_shm_pool 0 0
 instance DefaultIO WL_shm where
   defM = newIORef [] <&> WL_shm 0
 instance DefaultIO WL_surface where
   defM = pure WL_surface {wlid=0}
 
 -- }}}
-
--- TemplateHaskell Definitions {{{
-$(loadProtocolFile (ConT ''WaylandM) False "protocols/wayland.xml")
---}}}
-
 
 -- Interface Implementations
 
@@ -100,16 +108,16 @@ instance
     -- register the object, for other threads to access
     _int <- newObject callbackId $ pack_wl_callback callback
     -- send the message
-    let body = runPut $ wl_display_syncBuilder (AdditionalParserData []) callbackId
+    let body = runPut $ wl_display_syncBuilder nodata callbackId
     sendMessage self.wlid wl_display_syncOpcode body
     -- wait until sync request is complete. This might not be the default desired behavior.
-    takeMVar $ callback ^. done
+    --takeMVar $ callback ^. done
   wl_display_get_registry registryID self = do
     ClientEnv env <- ask
     registry <- liftIO $ get_wl_registry (Proxy @i)
     modifyIORef env.objects (Map.insert registryID $ pack_wl_registry registry)
 
-    let body = runPut $ wl_display_get_registryBuilder (AdditionalParserData []) registryID
+    let body = runPut $ wl_display_get_registryBuilder nodata registryID
     let opcode = wl_display_get_registryOpcode
     sendMessage self.wlid opcode body
     liftIO . strReq ("wl_display", wlDisplayID, "get_registry") $ "wl_registry=" <> show registryID
@@ -135,22 +143,27 @@ instance Interface_wl_display WL_display i Server where
 -- WL_registry {{{
 instance InterfaceSet i => Interface_wl_registry WL_registry i Client where
   -- requests {{{
-  wl_registry_bind name interfaceName interfaceVersion newID _self = do
-    --TODO: append `interfaceFromName name` to client interfaces
-    let body = runPut $ wl_registry_bindBuilder (AdditionalParserData []) name interfaceName interfaceVersion newID
-    sendMessage newID wl_registry_bindOpcode body
-    liftIO . strReq ("wl_registry", newID, "registry_bind") $ "name: " <> show name <> " newID: " <> show interfaceName <> ", " <> show interfaceVersion <> ", " <> show newID
+  wl_registry_bind name interfaceName interfaceVersion newId self = do
+    ClientEnv env <- ask
+    interfaceFromName name >>= \case
+      Just x -> modifyIORef env.objects $ Map.insert newId x
+      Nothing -> error $ "interface with name `" <> show name <> "` not found."
+    let body = runPut $ wl_registry_bindBuilder nodata name interfaceName interfaceVersion newId
+    sendMessage newId wl_registry_bindOpcode body
+    liftIO . strReq ("wl_registry", self.wlid, "bind") $ "name: " <> show name <> " newId: " <> show interfaceName <> ", " <> show interfaceVersion <> ", " <> show newId
   -- }}}
   -- events {{{
-  wl_registry_global name interfaceName _interfaceVersion _self = do
+  wl_registry_global name interfaceName interfaceVersion self = do
     -- likely this requires a version check, like this maybe:
-    -- liftIO $ unless (wl_registryVersion == fromIntegral _interfaceVersion) (putStrLn $ "warning: WL_registry version mismatch: [compositor " <> show _interfaceVersion <> "], client [" <> show wl_registryVersion <> "]")
+    -- liftIO $ unless (wl_registryVersion == fromIntegral interfaceVersion) (putStrLn $ "warning: WL_registry version mismatch: [compositor " <> show interfaceVersion <> "], client [" <> show wl_registryVersion <> "]")
     int <- liftIO $ interfaceByStringName interfaceName
     ClientEnv env <- ask
     modifyIORef env.globals $ Map.insert name int
-  wl_registry_global_remove name _self = do
+    liftIO . strReq ("wl_registry", self.wlid, "global") $ "name: " <> show name <> " newID: " <> show interfaceName <> ", " <> show interfaceVersion
+  wl_registry_global_remove name self = do
     ClientEnv env <- ask
     modifyIORef env.globals $ Map.delete name
+    liftIO . strReq ("wl_registry", self.wlid, "global_remove") $ "name: " <> show name
   -- }}}
 instance Interface_wl_registry WL_registry i Server where
 -- }}}
@@ -160,21 +173,35 @@ instance Interface_wl_callback WL_callback i Client where
   wl_callback_done dat self = do
     ClientEnv env <- ask
     modifyIORef env.objects (Map.delete self.wlid)
+    liftIO . strReq ("wl_callback", self.wlid, "done") $ "data: " <> show dat
 -- }}}
 
 -- WL_compositor {{{
-instance Interface_wl_compositor WL_compositor i Client where
+instance (Protocol_wayland i
+        , HasWlid (Type_wl_region i) Word32
+        , HasWlid (Type_wl_surface i) Word32
+        ) => Interface_wl_compositor WL_compositor i Client where
   -- requests {{{
   wl_compositor_create_surface surfaceId self = do
-    let body = runPut $ wl_compositor_create_surfaceBuilder (AdditionalParserData []) surfaceId
-    let opcode = wl_compositor_create_surfaceOpcode
+    ClientEnv env <- ask
+    surface' <- liftIO $ get_wl_surface (Proxy @i)
+    let surface = surface' & wlid .~ surfaceId
+    modifyIORef env.objects $ Map.insert surfaceId $ pack_wl_surface surface
+    let body = runPut $ wl_compositor_create_surfaceBuilder nodata surfaceId
     sendMessage self.wlid wl_compositor_create_surfaceOpcode body
+    liftIO . strReq ("wl_compositor", self.wlid, "create_surface") $ "surfaceId: " <> show surfaceId
   wl_compositor_create_region regionId self = do
-    let body = runPut $ wl_compositor_create_regionBuilder (AdditionalParserData []) regionId
+    ClientEnv env <- ask
+    region' <- liftIO $ get_wl_region (Proxy @i)
+    let region = region' & wlid .~ regionId
+    modifyIORef env.objects $ Map.insert regionId $ pack_wl_region region
+    let body = runPut $ wl_compositor_create_regionBuilder nodata regionId
     sendMessage self.wlid wl_compositor_create_regionOpcode body
+    liftIO . strReq ("wl_compositor", self.wlid, "create_region") $ "regionId: " <> show regionId
   wl_compositor_release self = do
-    let body = runPut $ wl_compositor_releaseBuilder (AdditionalParserData [])
+    let body = runPut $ wl_compositor_releaseBuilder nodata
     sendMessage self.wlid wl_compositor_create_regionOpcode body
+    liftIO $ strReq ("wl_compositor", self.wlid, "release") ""
   -- }}}
 
 {-
@@ -188,17 +215,35 @@ instance Interface_wl_compositor WL_compositor i Server where
 -- }}}
 
 -- WL_shm_pool {{{
-instance Interface_wl_shm_pool WL_shm_pool i Client where
+instance (Protocol_wayland i
+        , HasWlid   (Type_wl_buffer i) Word32
+        , HasOffset (Type_wl_buffer i) Int
+        , HasWidth  (Type_wl_buffer i) Int
+        , HasHeight (Type_wl_buffer i) Int
+        , HasStride (Type_wl_buffer i) Int
+        , HasFormat (Type_wl_buffer i) Enum_wl_shm_format
+        ) => Interface_wl_shm_pool WL_shm_pool i Client where
   -- requests {{{
-  wl_shm_pool_create_buffer bufID offset width height stride format self = undefined
+  wl_shm_pool_create_buffer bufId offset' width' height' stride' format' self = do
+    ClientEnv env <- ask
+    buffer' <- liftIO $ get_wl_buffer (Proxy @i)
+    let buffer = buffer' & wlid .~ bufId
+                         & offset .~ offset'
+                         & width .~ width'
+                         & height .~ height'
+                         & stride .~ stride'
+                         & format .~ enum_wl_shm_format' format'
+    modifyIORef env.objects $ Map.insert bufId $ pack_wl_buffer buffer
+    liftIO $ strReq ("wl_shm_pool", self.wlid, "create_buffer") $ "bufId=" <> show bufId <> " offset=" <> show offset' <> " width=" <> show width' <> " height=" <> show height' <> " stride=" <> show stride' <> " format=" <> show format'
   wl_shm_pool_destroy self = do
     ClientEnv env <- ask
     modifyIORef env.objects $ Map.delete self.wlid
-    let body = runPut $ wl_shm_pool_destroyBuilder (AdditionalParserData [])
+    let body = runPut $ wl_shm_pool_destroyBuilder nodata
     sendMessage self.wlid wl_shm_pool_destroyOpcode body
-    liftIO $ strReq ("wl_shm_pool", self.wlid, "wl_shm_pool_destroy") ""
+    liftIO $ strReq ("wl_shm_pool", self.wlid, "destroy") ""
   wl_shm_pool_resize new_size self = do
     writeIORef self.size new_size
+    liftIO $ strReq ("wl_shm_pool", self.wlid, "resize") ""
   -- }}}
 -- }}}
 
@@ -206,26 +251,27 @@ instance Interface_wl_shm_pool WL_shm_pool i Client where
 instance (Protocol_wayland i
         , HasWlid (Type_wl_shm_pool i) Word32
         , HasFd (Type_wl_shm_pool i) Fd
-        , HasSize (Type_wl_shm_pool i) Int
+        , HasSize (Type_wl_shm_pool i) (IORef Int)
         ) => Interface_wl_shm WL_shm i Client where
   -- requests {{{
-  wl_shm_create_pool poolId fd size self = do
+  -- | https://wayland.app/protocols/wayland#wl_shm:request:create_pool
+  wl_shm_create_pool poolId fd' size' self = do
     ClientEnv env <- ask
-    pool <- liftIO $ get_wl_shm_pool (Proxy @i)
+    sizeRef <- newIORef size'
+    pool' <- liftIO $ get_wl_shm_pool (Proxy @i)
+    let pool = pool' & wlid .~ poolId
+                     & fd   .~ fd'
+                     & size .~ sizeRef
     modifyIORef env.objects $ Map.insert poolId $ pack_wl_shm_pool pool
-      {-{ id = poolId
-      , fd = fd
-      , size = size
-      }-}
-    let body = runPut $ wl_shm_create_poolBuilder (AdditionalParserData [fd]) poolId fd size
-    sendMessageWithFds [fd] self.wlid wl_shm_create_poolOpcode body
-    liftIO $ strReq ("wl_shm", self.wlid, "wl_shm_create_pool") $ "poolId: " <> show poolId <> " fd: " <> show fd <> " size: " <> show size
+    let body = runPut $ wl_shm_create_poolBuilder (AdditionalParserData [fd']) poolId fd' size'
+    sendMessageWithFds [fd'] self.wlid wl_shm_create_poolOpcode body
+    liftIO $ strReq ("wl_shm", self.wlid, "create_pool") $ "poolId: " <> show poolId <> " fd: " <> show fd' <> " size: " <> show size'
   wl_shm_release self = do
     ClientEnv env <- ask
     modifyIORef env.objects $ Map.delete self.wlid
-    let body = runPut $ wl_shm_releaseBuilder (AdditionalParserData [])
+    let body = runPut $ wl_shm_releaseBuilder nodata
     sendMessage self.wlid wl_shm_releaseOpcode body
-    liftIO $ strReq ("wl_shm", self.wlid, "wl_shm_release") ""
+    liftIO $ strReq ("wl_shm", self.wlid, "release") ""
   -- }}}
   -- events {{{
   wl_shm_format format self = modifyIORef self.formats (fromIntegral format:)
@@ -264,10 +310,10 @@ instance Interface_wl_data_source WL_data_source i Client where
   wl_data_source_set_actions = undefined
   -- }}}
   -- events {{{
-  wl_data_source_target = undefined 
+  wl_data_source_target = undefined
   wl_data_source_send = undefined
-  wl_data_source_cancelled = undefined 
-  wl_data_source_dnd_drop_performed = undefined 
+  wl_data_source_cancelled = undefined
+  wl_data_source_dnd_drop_performed = undefined
   wl_data_source_dnd_finished = undefined
   wl_data_source_action = undefined
   -- }}}
@@ -276,16 +322,16 @@ instance Interface_wl_data_source WL_data_source i Client where
 -- WL_data_device {{{
 instance Interface_wl_data_device WL_data_device i Client where
   -- requests {{{
-  wl_data_device_start_drag = undefined 
-  wl_data_device_set_selection = undefined 
-  wl_data_device_release = undefined 
+  wl_data_device_start_drag = undefined
+  wl_data_device_set_selection = undefined
+  wl_data_device_release = undefined
   -- }}}
   -- events {{{
-  wl_data_device_data_offer = undefined 
-  wl_data_device_enter = undefined 
-  wl_data_device_leave = undefined 
-  wl_data_device_motion = undefined 
-  wl_data_device_drop = undefined 
+  wl_data_device_data_offer = undefined
+  wl_data_device_enter = undefined
+  wl_data_device_leave = undefined
+  wl_data_device_motion = undefined
+  wl_data_device_drop = undefined
   wl_data_device_selection = undefined
   -- }}}
 -- }}}
@@ -335,15 +381,24 @@ instance Interface_wl_shell_surface WL_shell_surface i Client where
 instance Interface_wl_surface WL_surface i Client where
   -- requests {{{
   wl_surface_destroy = undefined
-  wl_surface_attach = undefined
-  wl_surface_damage = undefined
+  -- | https://wayland.app/protocols/wayland#wl_surface:request:attach
+  wl_surface_attach bufferId x y self = do
+    let body = runPut $ wl_surface_attachBuilder nodata bufferId x y
+    sendMessage self.wlid wl_surface_attachOpcode body
+    liftIO $ strReq ("wl_surface", self.wlid, "wl_surface_attach") $
+           "bufferId: " <> show bufferId <> " x: " <> show x <> " y: " <> show y
+  wl_surface_damage x y w h self = undefined
   wl_surface_frame = undefined
   wl_surface_set_opaque_region = undefined
   wl_surface_set_input_region = undefined
-  wl_surface_commit = undefined
+  wl_surface_commit self = do
+    let body = runPut $ wl_surface_commitBuilder nodata
+    sendMessage self.wlid wl_surface_commitOpcode body
   wl_surface_set_buffer_transform = undefined
   wl_surface_set_buffer_scale = undefined
-  wl_surface_damage_buffer = undefined
+  wl_surface_damage_buffer x y w h self = do
+    let body = runPut $ wl_surface_damage_bufferBuilder nodata x y w h
+    sendMessage self.wlid wl_surface_damage_bufferOpcode body
   wl_surface_offset = undefined
   wl_surface_get_release = undefined
   --}}}

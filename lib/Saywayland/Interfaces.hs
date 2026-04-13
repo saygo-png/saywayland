@@ -4,6 +4,7 @@ module Saywayland.Interfaces where
 
 import Relude
 import Saywayland.Protocols.Wayland
+import Saywayland.Protocols.WlrLayerShell
 import Protocol
 import Data.List (singleton)
 

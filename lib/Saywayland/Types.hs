@@ -1,5 +1,3 @@
-{-# LANGUAGE TemplateHaskell #-}
-
 module Saywayland.Types where
 
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
@@ -299,6 +297,13 @@ strReq (object, objectID, method) text = do
           then \ci c t -> fromString (setSGRCode [SetColor Foreground ci c]) <> t <> fromString (setSGRCode [Reset])
           else const $ const id
 
+
+-- | helper function for getting an object from a global
+interfaceFromName :: Word32 -> WaylandM i Client (Maybe i)
+interfaceFromName n = do
+  ClientEnv env <- ask
+  glob <- readIORef env.globals
+  pure $ Map.lookup n glob
 -- }}}
 
 

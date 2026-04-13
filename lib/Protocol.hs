@@ -186,14 +186,20 @@ enumName' A = 1 ...
 mkEnum :: String -> String -> [(String,Int)] -> [Dec]
 mkEnum interfaceName enumName enumKV = [
     DataD [] (mkName enumName') [] Nothing constructors [DerivClause Nothing [ConT ''Eq]]
-  , SigD (mkName funName) (AppT (AppT ArrowT (ConT $ mkName enumName')) (ConT ''Int))
+  , SigD (mkName funName) (AppT (AppT ArrowT (ConT $ mkName enumName')) (ConT ''Word32))
   , FunD (mkName funName) clauses
+
+  , SigD (mkName funName') (AppT (AppT ArrowT (ConT ''Word32)) (ConT $ mkName enumName'))
+  , FunD (mkName funName') clauses'
   ]
   where
     enumName' = "Enum_" <> interfaceName <> "_" <> enumName
     funName = "enum_" <> interfaceName <> "_" <> enumName
+    funName' = "enum_" <> interfaceName <> "_" <> enumName <> "'"
     constructors = (`NormalC` []) . mkName . (enumName'<>) <$> fmap fst enumKV
     clauses = [Clause [ConP (mkName $ enumName' <> k) [] []] (NormalB (LitE (IntegerL (fromIntegral v)))) [] | (k,v)<-enumKV]
+    
+    clauses' = [Clause [LitP (IntegerL (fromIntegral v))] (NormalB (ConE (mkName $ enumName' <> k))) [] | (k,v)<-enumKV]
 
 -- | Define an accumulated parser for the entire interface, combining all request xor event parsers.
 mkParserChain :: String -> [Function a] -> Q Exp
@@ -227,6 +233,8 @@ data EnumEntry = EnumEntry {
 data AdditionalParserData = AdditionalParserData {
     fds :: [Fd]
   }
+nodata :: AdditionalParserData
+nodata = AdditionalParserData []
 -- }}}
 
 -- Loading from File {{{

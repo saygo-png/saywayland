@@ -58,6 +58,7 @@ library
     Saywayland.Types
     Saywayland.WaylandSocket
     Saywayland.Protocols.Wayland
+    Saywayland.Protocols.WlrLayerShell
     Saywayland.Interfaces
     SaywaylandTH
     Protocol
