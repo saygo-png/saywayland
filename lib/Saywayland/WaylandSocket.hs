@@ -1,5 +1,6 @@
 module Saywayland.WaylandSocket (module Saywayland.WaylandSocket) where
 
+import Data.ByteString qualified as BS
 import Control.Concurrent (forkIO)
 import Data.Bool (bool)
 import Data.Map qualified as M
@@ -13,10 +14,15 @@ import System.FilePath
 import Prelude
 
 import Saywayland.Interfaces
+import Network.Socket.ByteString (recvMsg)
+import Foreign.C
+import System.Posix (Fd (Fd))
+import Foreign (Storable(sizeOf, peek), castPtr)
+import GHC.IO (unsafePerformIO)
 -- Listeners {{{
 
 -- | listen for client connections in provided socket.
-listenForClients :: Socket -> WaylandM Interface 'Server ()
+listenForClients :: Socket -> WaylandM Interface Server ()
 listenForClients sock = do
   env <- ask
   -- NO IMPL: should create WL_display on start.
@@ -28,21 +34,47 @@ listenForClients sock = do
   _ <- liftIO $ forkIO $ runReaderT (clientLoop sock) clientenv
   liftIO $ runReaderT (listenForClients sock) env
 
+
+
+decodeFds :: BS.ByteString -> [Fd]
+decodeFds bs =
+  Fd <$> go bs []
+  where
+    go b acc
+      | BS.length b < sizeOf (0 :: CInt) = reverse acc
+      | otherwise =
+          let (x, rest) = BS.splitAt (sizeOf (0 :: CInt)) b
+              v = unsafePerformIO $
+                    BS.useAsCString x (peek . castPtr)
+          in go rest (v:acc)
+
 -- | handle communication between a server and a client in provided socket, works both on the server and the client.
 clientLoop :: Socket -> WaylandM Interface p ()
-clientLoop sock = undefined
+clientLoop = clientLoop' [] ""
 
--- do
---   message <- parseMessage sock
---   case message of
---     Nothing -> liftIO $ print "failed to read message"
---     Just Message {msgSender, msgFunction} -> do
---       env <- ask
---       obj <- liftIO $ readIORef (clientGlobalObjects env)
---       case Map.lookup msgSender obj of
---         Just x -> displayRequest msgFunction >> executeFunction x msgFunction
---         Nothing -> liftIO $ print $ "couldn't find the object: `" <> show msgSender <> "`"
---   clientLoop sock
+clientLoop' :: [Fd] -> BS.ByteString -> Socket -> WaylandM Interface p ()
+clientLoop' fds bytes sock = do
+  (_, bytes', cmsgs, flags) <- liftIO $ recvMsg sock 8 4096 mempty
+  let newFds = concatMap (decodeFds . cmsgData) $ filter (\x -> cmsgId x == CmsgIdFds) cmsgs
+
+  bool ((\(x,y) -> handleMessage (fds ++ newFds) x >> clientLoop' [] y sock) $ extractMessage bytes) (clientLoop' (fds ++ newFds) bytes sock) (isPartial bytes)
+
+isPartial :: BS.ByteString -> Bool
+isPartial = undefined
+extractMessage :: BS.ByteString -> (BS.ByteString, BS.ByteString)
+extractMessage = undefined
+handleMessage :: [Fd] -> BS.ByteString -> WaylandM Interface p ()
+handleMessage = undefined
+  {-message <- parseMessage sock
+  case message of
+    Nothing -> liftIO $ print "failed to read message"
+    Just Message {msgSender, msgFunction} -> do
+      env <- ask
+      obj <- liftIO $ readIORef (clientGlobalObjects env)
+      case Map.lookup msgSender obj of
+        Just x -> displayRequest msgFunction >> executeFunction x msgFunction
+        Nothing -> liftIO $ print $ "couldn't find the object: `" <> show msgSender <> "`"
+  clientLoop sock-}
 
 -- }}}
 
