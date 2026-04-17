@@ -1,6 +1,7 @@
 module Saywayland.Types where
 
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
+import Data.Bimap qualified as BM
 import Data.Binary
 import Data.Binary.Get hiding (remaining)
 import Data.Binary.Put
@@ -204,7 +205,7 @@ data ClientEnvironment i = ClientEnvironment
     socket  :: Socket
   , counter :: IORef Word32
   , objects :: IORef (Map Word32 i)
-  , globals :: IORef (Map {-global name-}Word32 i)
+  , globals :: IORef (BM.Bimap {-string name-}BS.ByteString {-global name-}Word32)
   }
 
 -- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.
@@ -299,12 +300,16 @@ strReq (object, objectID, method) text = do
 
 
 -- | helper function for getting an object from a global
-interfaceFromName :: Word32 -> WaylandM i Client (Maybe i)
+interfaceFromName :: Word32 -> WaylandM i Client (Maybe BS.ByteString)
 interfaceFromName n = do
   ClientEnv env <- ask
   glob <- readIORef env.globals
-  pure $ Map.lookup n glob
+  pure $ BM.lookupR n glob
 -- }}}
 
+getInterface :: Word32 -> WaylandM i Client (Maybe i)
+getInterface objectID = do
+  ClientEnv env <- ask
+  Map.lookup objectID <$> readIORef env.objects
 
 -- vim: foldmethod=marker

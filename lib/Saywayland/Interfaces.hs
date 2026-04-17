@@ -11,7 +11,7 @@ import Data.List (singleton)
 data Interface = WLDisplay WL_display | WLRegistry WL_registry | WLCallback WL_callback | WLShmPool WL_shm_pool | WLShm WL_shm | WLSurface WL_surface | WLCompositor WL_compositor
 
 instance InterfaceSet Interface where
-  interfaceByStringName = \case
+  interfaceByStringName _ = \case
     "wl_display"  -> defM <&> WLDisplay
     "wl_registry" -> defM <&> WLRegistry
     "wl_callback" -> defM <&> WLCallback

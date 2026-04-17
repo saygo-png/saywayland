@@ -1,6 +1,6 @@
 {-# LANGUAGE TemplateHaskell, DataKinds, OverloadedStrings #-}
 module Protocol where
--- this module's purpose is to define all requests and events that exist and should be implemented. Implementing them is handled in `Interfaces.hs`
+-- this module's purpose is to define all requests and events that exist and should be implemented. Implementing them is handled in `Interfaces`
 
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
@@ -212,8 +212,11 @@ mkParserChain _ [] = [e|undefined|]--[e| Parser <$> const Nothing |]
 
 -- Data Types {{{
 
+class DefaultIO a where
+  defM :: IO a
+
 class InterfaceSet i where
-  interfaceByStringName :: BS.ByteString -> IO i
+  interfaceByStringName :: Proxy i -> BS.ByteString -> IO i
   hasObject :: i -> BS.ByteString -> Bool
 
 -- | Differentiates between requests and events
@@ -319,10 +322,16 @@ loadInterface monad int = do
   let reqParserChainD = FunD requestParserName [ Clause [VarP (mkName "dat")] (NormalB reqParserChain) [] ]
 
   concat <$> sequence [
-    -- Version
-      [d| $(varP (mkName $ name' <> "Version")) = $(pure . LitE . IntegerL $ version') |]
-    -- Class definition
-    , pure [mkClass ("Interface_" <> name') ["a", "i", "p"] definitions]
+      pure [
+      -- Version
+        SigD (mkName $ name' <> "Version") $ ConT ''Word32
+      , ValD (VarP verName) (NormalB . LitE . IntegerL $ version') []
+      -- Name
+      , SigD (mkName $ name' <> "Name") $ ConT ''String
+      , ValD (VarP nameName) (NormalB . LitE . StringL $ name') []
+      -- Class definition
+      , mkClass ("Interface_" <> name') ["a", "i", "p"] definitions
+      ]
     -- Request Parsers
     , concat <$> mapM (mkParser monad name') requests'
     , singleton <$> ([t| ($(conT . mkName $ "Interface_" <> name') $a $(pure . VarT $ mkName "i") $(pure . VarT $ mkName "p"), InterfaceSet $(pure . VarT $ mkName "i")) =>
@@ -341,10 +350,13 @@ loadInterface monad int = do
     , pure opcodes
     ]
   where
+    name' = fromJust $ findAttr (qname "name") int
+    verName = mkName $ name' <> "Version"
+    nameName = mkName $ name' <> "Name"
     a = varT $ mkName "a"
+    
     eventParserName = mkName $ "eventParser_" <> name'
     requestParserName = mkName $ "requestParser_" <> name'
-    name' = fromJust $ findAttr (qname "name") int
     loadF x = zipWithM loadFunction [0..] $ findChildren (qname x) int
     version' = read . fromJust $ findAttr (qname "version") int
     enums' = loadEnum <$> findChildren (qname "enum") int

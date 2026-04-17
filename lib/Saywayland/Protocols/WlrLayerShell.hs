@@ -17,6 +17,10 @@ makeFieldsId ''Zwlr_layer_shell_v1
 data Zwlr_layer_surface_v1 = Zwlr_layer_surface_v1 {wlid :: Word32}
 makeFieldsId ''Zwlr_layer_surface_v1
 
+instance DefaultIO Zwlr_layer_shell_v1 where
+  defM = pure $ Zwlr_layer_shell_v1 0
+instance DefaultIO Zwlr_layer_surface_v1 where
+  defM = pure $ Zwlr_layer_surface_v1 0
 
 -- zwlr_layer_shell_v1 {{{
 instance (

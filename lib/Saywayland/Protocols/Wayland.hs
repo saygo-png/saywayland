@@ -7,7 +7,9 @@ import Protocol hiding (ObjectID)
 import Saywayland.Types
 import Language.Haskell.TH (Type(ConT))
 
+import Data.ByteString qualified as BS
 import Data.Map qualified as Map
+import Data.Bimap qualified as BM
 import Data.Binary.Put (runPut)
 import System.Posix (Fd)
 import Control.Lens (makeFieldsId, (^.), (.~), (&), set)
@@ -73,13 +75,14 @@ makeFieldsId ''WL_subsurface
 data WL_fixes = WL_fixes {wlid :: Word32}
 makeFieldsId ''WL_fixes
 
-class DefaultIO a where
-  defM :: IO a
-
 instance DefaultIO WL_display where
   defM = pure WL_display {wlid=wlDisplayID}
 instance DefaultIO WL_registry where
   defM = pure WL_registry {wlid=0}
+instance DefaultIO WL_buffer where
+  defM = pure WL_buffer {wlid=0, offset=0, width=0, height=0,stride=0,format=Enum_wl_shm_formatargb8888}
+instance DefaultIO WL_region where
+  defM = pure WL_region {wlid=0}
 instance DefaultIO WL_callback where
   defM = newEmptyMVar <&> WL_callback 0
 instance DefaultIO WL_compositor where
@@ -146,7 +149,7 @@ instance InterfaceSet i => Interface_wl_registry WL_registry i Client where
   wl_registry_bind name interfaceName interfaceVersion newId self = do
     ClientEnv env <- ask
     interfaceFromName name >>= \case
-      Just x -> modifyIORef env.objects $ Map.insert newId x
+      Just x -> liftIO (interfaceByStringName (Proxy @i) x) >>= modifyIORef env.objects . Map.insert newId
       Nothing -> error $ "interface with name `" <> show name <> "` not found."
     let body = runPut $ wl_registry_bindBuilder nodata name interfaceName interfaceVersion newId
     sendMessage newId wl_registry_bindOpcode body
@@ -156,13 +159,12 @@ instance InterfaceSet i => Interface_wl_registry WL_registry i Client where
   wl_registry_global name interfaceName interfaceVersion self = do
     -- likely this requires a version check, like this maybe:
     -- liftIO $ unless (wl_registryVersion == fromIntegral interfaceVersion) (putStrLn $ "warning: WL_registry version mismatch: [compositor " <> show interfaceVersion <> "], client [" <> show wl_registryVersion <> "]")
-    int <- liftIO $ interfaceByStringName interfaceName
     ClientEnv env <- ask
-    modifyIORef env.globals $ Map.insert name int
+    modifyIORef env.globals $ BM.insert interfaceName name
     liftIO . strReq ("wl_registry", self.wlid, "global") $ "name: " <> show name <> " newID: " <> show interfaceName <> ", " <> show interfaceVersion
   wl_registry_global_remove name self = do
     ClientEnv env <- ask
-    modifyIORef env.globals $ Map.delete name
+    modifyIORef env.globals $ BM.deleteR name
     liftIO . strReq ("wl_registry", self.wlid, "global_remove") $ "name: " <> show name
   -- }}}
 instance Interface_wl_registry WL_registry i Server where
@@ -537,5 +539,16 @@ instance Interface_wl_fixes WL_fixes i Client where
 --}}}
 
 
+-- Wrapper Functions, for QoL
+bindToInterface :: (Interface_wl_registry registry i Client) => registry -> BS.ByteString -> WaylandM i Client (Maybe Word32)
+bindToInterface registry intName = do
+  ClientEnv env <- ask
+  id <- newObjectId
+  glob <- BM.lookup intName <$> readIORef env.globals
+  case glob of
+    Just x -> do
+      wl_registry_bind x "wl_shm" wl_shmVersion id registry
+      pure $ Just id
+    Nothing -> pure Nothing
 
 -- vim: foldmethod=marker

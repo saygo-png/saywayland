@@ -52,6 +52,7 @@ library
     , xml
     , unix
     , lens
+    , bimap
   hs-source-dirs:  lib
   exposed-modules:
     Saywayland
@@ -78,6 +79,8 @@ test-suite client-wallpaper-daemon
     , relude
     , saywayland
     , unix
+    , containers
+    , bimap
 test-suite template-haskell-protocol
   import:           common-options
   default-language: GHC2024
