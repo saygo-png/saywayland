@@ -5,6 +5,7 @@ import Data.ByteString.Lazy qualified as BL
 import Control.Concurrent (forkIO)
 import Data.Bool (bool)
 import Data.Map qualified as Map
+import Data.Bimap qualified as BM
 import Data.String (IsString (fromString))
 import Network.Socket
 import Relude (MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), newIORef, Word16, Word32, readIORef, LazyStrict (toLazy))
@@ -23,19 +24,22 @@ import GHC.IO (unsafePerformIO)
 import Data.Binary.Get
 import Data.Binary.Put (runPut, putWord16le)
 import Protocol
+import GHC.IORef (IORef(IORef))
+
 -- Listeners {{{
 
 -- | listen for client connections in provided socket.
-listenForClients :: Socket -> WaylandM i Server ()
+listenForClients :: Socket -> Wayland Server ()
 listenForClients sock = do
   env <- ask
   -- NO IMPL: should create WL_display on start.
   globalsref <- liftIO $ newIORef Map.empty -- Map.singleton 1 $ mkInterface WL_display
   serial <- liftIO $ newIORef 0
   objectsref <- liftIO $ newIORef Map.empty
+  globalsref <- liftIO $ newIORef BM.empty
   handlers <- newIORef []
-  let clientenv = ClientEnv $ ClientEnvironment{socket = sock, {-globals = globalsref,-} counter = serial, objects = objectsref{-, eventHandlers = handlers-}}
-  _ <- liftIO $ forkIO $ runReaderT (clientLoop sock) clientenv
+  let clientenv = ClientEnv $ ClientEnvironment{socket = sock, {-globals = globalsref,-} counter = serial, objects = objectsref{-, eventHandlers = handlers-}, globals = globalsref} :: WaylandEnv Client
+  _ <- liftIO $ forkIO $ runReaderT (clientLoop Server sock) clientenv
   liftIO $ runReaderT (listenForClients sock) env
 
 
@@ -57,19 +61,19 @@ decodeFds bs =
           in go rest (v:acc)
 
 -- | handle communication between a server and a client in provided socket, works both on the server and the client.
-clientLoop :: Socket -> WaylandM i Client ()
+clientLoop :: Perspective -> Socket -> Wayland Client ()
 clientLoop = clientLoop' [] ""
 
-clientLoop' :: [Fd] -> BS.ByteString -> Socket -> WaylandM i Client ()
-clientLoop' fds bytes' sock = do
+clientLoop' :: [Fd] -> BS.ByteString -> Perspective -> Socket -> Wayland Client ()
+clientLoop' fds bytes' as sock = do
   (_, bytes'', cmsgs, flags) <- liftIO $ recvMsg sock 8 4096 mempty
   let newFds = concatMap (decodeFds . cmsgData) $ filter (\x -> cmsgId x == CmsgIdFds) cmsgs
   let bytes = bytes' <> bytes''
   bool (case extractMessage bytes of
-    Just (id, opcode, x,y) -> handleMessage id (fds ++ newFds) (BS.toStrict (runPut $ putWord16le opcode) <> x) >> clientLoop' [{-hopefully fd passing won't break horrifyingly-}] y sock
+    Just (id, opcode, x,y) -> handleMessage as id (fds ++ newFds) opcode x >> clientLoop' [{-hopefully fd passing won't break horrifyingly-}] y as sock
     Nothing -> undefined
     )
-    (clientLoop' (fds ++ newFds) bytes sock)
+    (clientLoop' (fds ++ newFds) bytes as sock)
     (isPartial bytes)
 
 isPartial :: BS.ByteString -> Bool
@@ -80,14 +84,30 @@ extractMessage :: BS.ByteString -> Maybe (Word32,Word16, BS.ByteString, BS.ByteS
 extractMessage s = case runGetOrFail getHeader (BL.fromStrict s) of
               Left (_,_,_) -> Nothing
               Right (rest,_,(id,opcode,size)) -> Just (id, opcode, BS.take (fromIntegral size) $ BS.toStrict rest, BS.drop (fromIntegral size) $ BS.toStrict rest)
-handleMessage :: ObjectID -> [Fd] -> BS.ByteString -> WaylandM i Client ()
-handleMessage id fds msg = do
+handleMessage :: Perspective -> ObjectID -> [Fd] -> Word16 -> BS.ByteString -> Wayland Client ()
+handleMessage as id fds opcode msg = do
   ClientEnv env <- ask
   objects <- readIORef env.objects
   case Map.lookup id objects of
-    Just x -> runGet (getObjectParser x (AdditionalParserData fds)) $ toLazy msg
+    Just (Interface x) -> case as of
+      Client -> dispatchClientMessage x id fds opcode msg
+      Server -> undefined
     Nothing -> error $ "invalid object reference with id: " <> show id
   undefined
+
+dispatchClientMessage
+  :: forall i. Interface' i Client
+  => i
+  -> ObjectID
+  -> [Fd]
+  -> Word16
+  -> BS.ByteString
+  -> Wayland Client ()
+dispatchClientMessage x _ fds opcode msg = do
+  case runGetOrFail (getEvent opcode $ AdditionalParserData fds) (toLazy msg) of
+    Left (_, _, err)      -> fail err
+    Right (_, _, event)   -> runEvent x event
+
 getObjectParser = undefined 
   {-message <- parseMessage sock
   case message of

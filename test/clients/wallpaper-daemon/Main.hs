@@ -24,38 +24,6 @@ import Saywayland.WaylandSocket
 import Protocol
 import Data.Maybe (fromJust)
 
-data MyInterface = WLDisplay WL_display | WLRegistry WL_registry | WLCallback WL_callback | WLShmPool WL_shm_pool | WLShm WL_shm | WLSurface WL_surface | WLCompositor WL_compositor | WLRegion WL_region | WLBuffer WL_buffer
-                  | ZwlrLayerShellV1 Zwlr_layer_shell_v1 | ZwlrLayerSurfaceV1 Zwlr_layer_surface_v1
-
-instance InterfaceSet MyInterface where
-  interfaceByStringName _ = \case
-    "wl_display"  -> defM <&> WLDisplay
-    "wl_registry" -> defM <&> WLRegistry
-    "wl_callback" -> defM <&> WLCallback
-    "wl_shm_pool" -> defM <&> WLShmPool
-    "wl_shm"      -> defM <&> WLShm
-    "wl_surface"  -> defM <&> WLSurface
-    _ -> undefined
-
--- Protocol instance {{{
-pure . singleton $ genProtocol ''Protocol_wayland ''MyInterface [
-    ("wl_display", ''WL_display, 'WLDisplay)
-  , ("wl_buffer", ''WL_buffer, 'WLBuffer)
-  , ("wl_registry", ''WL_registry, 'WLRegistry)
-  , ("wl_region", ''WL_region, 'WLRegion)
-  , ("wl_callback", ''WL_callback, 'WLCallback)
-  , ("wl_compositor", ''WL_compositor, 'WLCompositor)
-  , ("wl_shm_pool", ''WL_shm_pool, 'WLShmPool)
-  , ("wl_shm", ''WL_shm, 'WLShm)
-  , ("wl_surface", ''WL_surface, 'WLSurface)
-  ]
-pure . singleton $ genProtocol ''Protocol_wlr_layer_shell_unstable_v1 ''MyInterface [
-    ("zwlr_layer_shell_v1", ''Zwlr_layer_shell_v1, 'ZwlrLayerShellV1)
-  , ("zwlr_layer_surface_v1", ''Zwlr_layer_surface_v1, 'ZwlrLayerSurfaceV1)
-  ]
--- }}}
-
-
 main :: IO ()
 main = do
   runReaderT program =<< waylandSetup
@@ -69,11 +37,11 @@ main = do
           counter <- newIORef $ coerce wlDisplayID + 1
           globals <- newIORef mempty
           objects <- newIORef BM.empty
-          --handlers <- newIORef mempty
-          pure $ ClientEnv $ ClientEnvironment sock counter globals objects --handlers
+          handlers <- newIORef mempty
+          pure $ ClientEnv $ ClientEnvironment sock counter globals objects stupidInterfaceGetter stupidVersionGetter handlers
         Nothing -> error "couldn't find a $WAYLAND_DISPLAY, nor any open socket."
 
-program :: WaylandM MyInterface Client ()
+program :: Wayland Client ()
 program = do
   ClientEnv env <- ask
   serial :: TMVar Word32 <- newEmptyTMVarIO
@@ -81,23 +49,23 @@ program = do
 
   let display = WL_display 1
   
-  registryID <- newObjectId
-  wl_display_get_registry registryID display
-  (Just (WLRegistry registry)) <- Map.lookup registryID <$> readIORef env.objects
+  registryId <- newObjectId
+  runRequest display $ Request_wl_display_get_registry registryId
+  (Just registry') <- Map.lookup registryId <$> readIORef env.objects
   liftIO
     . void
     . forkIO
     $ finally
-      (putStrLn "\n--- Starting event loop ---" >> runReaderT (clientLoop env.socket) (ClientEnv env))
+      (putStrLn "\n--- Starting event loop ---" >> runReaderT (undefined {-clientLoop Client env.socket-}) (ClientEnv env))
       (close env.socket >> putMVar running ())
-
+  let registry = fromJust $ proxyInterface (Proxy @WL_registry) registry'
   putStrLn "Binding to required interfaces..."
-  wlShmID <- fromJust <$> bindToInterface registry "wl_shm"
-  WLShm wl_shm <- fromJust <$> getInterface wlShmID
-  wlCompositorID <- fromJust <$> bindToInterface registry "wl_compositor"
-  WLCompositor compositor <- fromJust <$> getInterface wlCompositorID
-  zwlrLayerShellV1ID <- fromJust <$> bindToInterface registry "zwlr_layer_shell_v1"
-  ZwlrLayerShellV1 zwlrLayerShellV1 <- fromJust <$> getInterface zwlrLayerShellV1ID
+  wlShmId <- fromJust <$> bindToInterface registry "wl_shm"
+  wl_shm <- fromJust <$> getInterface' (Proxy @WL_shm) wlShmId
+  wlCompositorId <- fromJust <$> bindToInterface registry "wl_compositor"
+  compositor <- fromJust <$> getInterface' (Proxy @WL_compositor) wlCompositorId
+  zwlrLayerShellV1Id <- fromJust <$> bindToInterface registry "zwlr_layer_shell_v1"
+  zwlrLayerShellV1 <- fromJust <$> getInterface' (Proxy @Zwlr_layer_shell_v1) zwlrLayerShellV1Id
 
 
   {-TODO: port this
@@ -107,16 +75,18 @@ program = do
     _ -> pure ()
   -}
 
-  wlSurfaceID <- newObjectId
-  wl_compositor_create_surface wlSurfaceID compositor
-  WLSurface surface <- fromJust <$> getInterface wlSurfaceID
-  layerSurfaceID <- newObjectId
-  zwlr_layer_shell_v1_get_layer_surface layerSurfaceID wlSurfaceID {-output-}0 {-enums might've been a bad idea, this is unreadable-}(enum_zwlr_layer_shell_v1_layer Enum_zwlr_layer_shell_v1_layerbackground) "wallpaper" zwlrLayerShellV1
-  ZwlrLayerSurfaceV1 zwlrLayerSurfaceV1 <- fromJust <$> getInterface layerSurfaceID
-  zwlr_layer_surface_v1_set_size (fromIntegral bufferWidth) (fromIntegral bufferHeight) zwlrLayerSurfaceV1
-  zwlr_layer_surface_v1_set_exclusive_zone (-1) zwlrLayerSurfaceV1
-  wl_surface_commit surface
-  (`zwlr_layer_surface_v1_ack_configure` zwlrLayerSurfaceV1) =<< atomically (takeTMVar serial)
+  wlSurfaceId <- newObjectId
+  runRequest compositor $ Request_wl_compositor_create_surface wlSurfaceId
+  surface' <- fromJust <$> getInterface wlSurfaceId
+  let surface = fromJust $ proxyInterface (Proxy @WL_surface) surface'
+  layerSurfaceId <- newObjectId
+  runRequest zwlrLayerShellV1 $ Request_zwlr_layer_shell_v1_get_layer_surface {id=layerSurfaceId, surface=wlSurfaceId,output=0,layer = enum_zwlr_layer_shell_v1_layer Enum_zwlr_layer_shell_v1_layerbackground, namespace = "wallpaper"}
+  zwlrLayerSurfaceV1 <- fromJust <$> getInterface' (Proxy @Zwlr_layer_surface_v1) layerSurfaceId
+  runRequest zwlrLayerSurfaceV1 $ Request_zwlr_layer_surface_v1_set_size {width=fromIntegral bufferWidth, height=fromIntegral bufferHeight}
+  runRequest zwlrLayerSurfaceV1 $ Request_zwlr_layer_surface_v1_set_exclusive_zone {zone = -1}
+  
+  runRequest surface Request_wl_surface_commit
+  atomically (takeTMVar serial) >>= runRequest zwlrLayerSurfaceV1 . Request_zwlr_layer_surface_v1_ack_configure
 
   let makeSharedMemoryObject = shmOpen poolName (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
       removeSharedMemoryObject _ = shmUnlink poolName
@@ -125,17 +95,17 @@ program = do
           let frameSize = bufferWidth * bufferHeight * colorChannels
           let poolSize = fromIntegral frameSize
           liftIO . setFdSize fileDescriptor $ fromIntegral poolSize
-          wlShmPoolID <- newObjectId
-          wl_shm_create_pool wlShmPoolID fileDescriptor poolSize wl_shm
-          WLShmPool wl_shm_pool <- fromJust <$> getInterface wlShmPoolID
-          wlBufferID <- newObjectId
-          wl_shm_pool_create_buffer wlBufferID 0 bufferWidth bufferHeight colorChannels (enum_wl_shm_format colorFormat) wl_shm_pool
+          wlShmPoolId <- newObjectId
+          runRequest wl_shm $ Request_wl_shm_create_pool {id=wlShmPoolId, fd=fileDescriptor,size=poolSize}
+          wl_shm_pool <- fromJust <$> getInterface' (Proxy @WL_shm_pool) wlShmPoolId
+          wlBufferId <- newObjectId
+          runRequest wl_shm_pool $ Request_wl_shm_pool_create_buffer {id=wlBufferId, offset=0, width=bufferWidth, height=bufferHeight, stride=colorChannels, format=enum_wl_shm_format colorFormat}
 
           fileHandle <- liftIO $ fdToHandle fileDescriptor
 
           liftIO $ hPut fileHandle image
-          wl_surface_attach wlBufferID 0 0 surface
-          wl_surface_commit surface
+          runRequest surface Request_wl_surface_attach {buffer=wlBufferId, x=0, y=0}
+          runRequest surface Request_wl_surface_commit
 
           -- Wait for exit
           takeMVar running

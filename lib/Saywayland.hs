@@ -25,7 +25,6 @@ import Network.Socket.ByteString (sendManyWithFds)
 import Network.Socket.ByteString.Lazy (recv, sendAll)
 import Relude hiding (ByteString, get, put)
 import Saywayland.Types
-import Saywayland.WaylandSocket (getSocketPath, openSocket)
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
 import System.Posix.Types (Fd)
 import Saywayland.Interfaces

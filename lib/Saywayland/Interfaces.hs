@@ -2,13 +2,15 @@
 -- | This module combines all implemented protocols into a single Interface datatype.
 module Saywayland.Interfaces where
 
+import Data.ByteString qualified as BS
 import Relude
 import Saywayland.Protocols.Wayland
 import Saywayland.Protocols.WlrLayerShell
 import Protocol
 import Data.List (singleton)
+import Data.Binary (Get)
 
-data Interface = WLDisplay WL_display | WLRegistry WL_registry | WLCallback WL_callback | WLShmPool WL_shm_pool | WLShm WL_shm | WLSurface WL_surface | WLCompositor WL_compositor
+{-data Interface = WLDisplay WL_display | WLRegistry WL_registry | WLCallback WL_callback | WLShmPool WL_shm_pool | WLShm WL_shm | WLSurface WL_surface | WLCompositor WL_compositor
 
 instance InterfaceSet Interface where
   interfaceByStringName _ = \case
@@ -29,5 +31,5 @@ pure . singleton $ genProtocol ''Protocol_wayland ''Interface [
   , ("wl_shm_pool", ''WL_shm_pool, 'WLShmPool)
   , ("wl_shm", ''WL_shm, 'WLShm)
   , ("wl_surface", ''WL_surface, 'WLSurface)
-  ]
+  ]-}
 -- }}}

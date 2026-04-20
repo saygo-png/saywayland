@@ -1,3 +1,4 @@
+{-# LANGUAGE TypeFamilies #-}
 module Saywayland.Types where
 
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
@@ -18,6 +19,7 @@ import System.Posix (Fd)
 import Data.ByteString qualified as BS
 import Network.Socket.ByteString.Lazy (sendAll)
 import Network.Socket.ByteString (sendManyWithFds)
+import Data.Data (cast)
 
 -- Constants {{{
 
@@ -187,30 +189,62 @@ to store state required for their specific application. This can be done using e
 
 data Perspective = Client | Server
 
-data WaylandEnv i (p :: Perspective) where
-  ClientEnv :: ClientEnvironment i -> WaylandEnv i 'Client
-  ServerEnv :: ServerEnvironment i -> WaylandEnv i 'Server
+data EventHandler where
+  EventHandler :: WaylandEvent e => (e -> IO ()) -> EventHandler
 
-data ServerEnvironment i = ServerEnvironment
+data WaylandEnv (p :: Perspective) where
+  ClientEnv :: ClientEnvironment Client -> WaylandEnv 'Client
+  ServerEnv :: ServerEnvironment -> WaylandEnv 'Server
+
+data ServerEnvironment = ServerEnvironment
   {
     socket  :: Socket
-  , clients :: IORef [ClientEnvironment i]
+  , clients :: IORef [ClientEnvironment Server]
   }
 
 -- | Unique name given to an interface.
 type InterfaceName = Word32
 
-data ClientEnvironment i = ClientEnvironment
+data ClientEnvironment (p :: Perspective) = ClientEnvironment
   {
     socket  :: Socket
   , counter :: IORef Word32
-  , objects :: IORef (Map Word32 i)
+  , objects :: IORef (Map Word32 (Interface p))
   , globals :: IORef (BM.Bimap {-string name-}BS.ByteString {-global name-}Word32)
+  , interfaceFromString :: String -> IO (Interface p)
+  , interfaceVersion :: String -> Word32
+  , eventHandlers :: IORef [EventHandler]
   }
 
--- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.
+class ( WaylandEvent (Event a)
+      , WaylandEvent (Request a)
+      , Typeable a) => Interface' a (p :: Perspective) where
+  type Event a
+  type Request a
+  runEvent   :: a -> Event a -> Wayland p ()
+  runRequest :: a -> Request a -> Wayland p ()
 
-type WaylandM i p = ReaderT (WaylandEnv i p) IO
+data Interface (p :: Perspective) where
+  Interface :: (Interface' i p, Typeable i) => i -> Interface p
+
+proxyInterface :: forall i p. Typeable i => Proxy i -> Interface p -> Maybe i
+proxyInterface _ (Interface i) = cast i
+
+
+class WaylandEvent e where
+  getEvent :: Word16 -> AdditionalParserData -> Get e
+  putEvent :: AdditionalParserData -> e -> Put
+
+data AdditionalParserData = AdditionalParserData {
+    fds :: [Fd]
+  }
+nodata :: AdditionalParserData
+nodata = AdditionalParserData []
+
+-- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.
+type Wayland p = ReaderT (WaylandEnv p) IO
+
+
 
 -- | Type representing a Wayland buffer.
 {-data Buffer = Buffer
@@ -246,41 +280,41 @@ instance ToText Header where
 
 -- }}}
 
-
 -- Utils {{{
-newObjectId :: WaylandM i 'Client Word32
+
+newObjectId :: Wayland 'Client Word32
 newObjectId = do
     ClientEnv env <- ask
     liftIO $ modifyIORef env.counter (+ 1)
     liftIO $ readIORef env.counter
 
-newObject :: Word32 -> i -> WaylandM i 'Client i
+newObject :: Typeable i => Interface' i 'Client => Word32 -> i -> Wayland 'Client i
 newObject intId int = do
     ClientEnv env <- ask
-    liftIO $ modifyIORef env.objects (Map.insert intId int)
+    liftIO $ modifyIORef env.objects (Map.insert intId $ Interface int)
     pure int
-
 {- | Convenience function for sending a Wayland message.
 See 'mkMessage'.
 -}
-sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> WaylandM i 'Client ()
-sendMessageWithFds fds objectID opCode messageBody = do
+sendMessageWithFds :: [Fd] -> Word32 -> BSL.ByteString -> Wayland 'Client ()
+sendMessageWithFds fds objectID opcodeWithMessageBody = do
   socket <- asks (\(ClientEnv env) -> env.socket)
-  liftIO $ sendManyWithFds socket [BS.toStrict $ mkMessage objectID opCode messageBody] fds
-sendMessage :: Word32 -> Word16 -> BSL.ByteString -> WaylandM i 'Client ()
-sendMessage objectID opCode messageBody = do
+  liftIO $ sendManyWithFds socket [BS.toStrict $ mkMessage objectID opcodeWithMessageBody] fds
+sendMessage :: Word32 -> BSL.ByteString -> Wayland 'Client ()
+sendMessage objectID opcodeWithMessageBody = do
   wlSocket <- asks (\(ClientEnv env) -> env.socket)
-  liftIO . sendAll wlSocket $ mkMessage objectID opCode messageBody
+  liftIO . sendAll wlSocket $ mkMessage objectID opcodeWithMessageBody
 
 {- | Convenience function for formatting a Wayland message.
 It takes an objectID, operation code and a message body.
 The header is generated based on this, the size is derived automatically.
 -}
-mkMessage :: Word32 -> Word16 -> BSL.ByteString -> BSL.ByteString
-mkMessage objectID opCode messageBody =
+mkMessage :: Word32 -> BSL.ByteString -> BSL.ByteString
+mkMessage objectID opcodeWithMessageBody =
   runPut $ do
-    put $ Header (fromIntegral objectID) opCode (headerSize + fromIntegral (BSL.length messageBody))
-    putLazyByteString messageBody
+    put objectID
+    putWord16le $ 6 + fromIntegral (BSL.length opcodeWithMessageBody)
+    putLazyByteString opcodeWithMessageBody
 
 {- | Convenience function for formatting events.
 Events are colored in magenta following the wayland.app colorscheme.
@@ -300,16 +334,21 @@ strReq (object, objectID, method) text = do
 
 
 -- | helper function for getting an object from a global
-interfaceFromName :: Word32 -> WaylandM i Client (Maybe BS.ByteString)
+interfaceFromName :: Word32 -> Wayland p (Maybe BS.ByteString)
 interfaceFromName n = do
   ClientEnv env <- ask
   glob <- readIORef env.globals
   pure $ BM.lookupR n glob
--- }}}
 
-getInterface :: Word32 -> WaylandM i Client (Maybe i)
+getInterface :: Word32 -> Wayland p (Maybe (Interface p))
 getInterface objectID = do
   ClientEnv env <- ask
   Map.lookup objectID <$> readIORef env.objects
+
+getInterface' :: forall i p. (Typeable i, Interface' i p) => Proxy i -> Word32 -> Wayland p (Maybe i)
+getInterface' _ objectID = do
+  ClientEnv env <- ask
+  cast . Map.lookup objectID <$> readIORef env.objects
+-- }}}
 
 -- vim: foldmethod=marker

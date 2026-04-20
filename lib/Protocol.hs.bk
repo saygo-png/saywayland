@@ -1,7 +1,7 @@
-{-# LANGUAGE TemplateHaskell, DataKinds, OverloadedStrings, TypeFamilies #-}
+{-# LANGUAGE TemplateHaskell, DataKinds, OverloadedStrings #-}
 module Protocol where
--- this module's purpose is to define all requests and events that exist and should be implemented. Implementing them is handled in `Interfaces`
-
+-- this module's purpose is to define all requests and events that exist and should be implemented. Implementing them is handled in `Interfaces`.
+-- this file is made of asbestos, avoid snorting it, or touching it in general.
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
 
@@ -16,7 +16,7 @@ import Data.Binary
 import Data.Binary.Get
 import Data.ByteString qualified as BS
 import Data.Text qualified as T
-import Data.Binary.Put (putInt32be, putByteString, putWord16le)
+import Data.Binary.Put (putInt32be, putByteString)
 
 import System.Posix (Fd)
 import System.Directory (listDirectory)
@@ -24,15 +24,10 @@ import System.FilePath (takeExtension, (</>))
 
 import Text.XML.Light
 import Data.Data (Proxy(Proxy))
-import Saywayland.Types
-import Data.Bool (bool)
+import Saywayland.Types (WaylandM, WaylandEvent, Perspective(Client,Server))
 
 type ObjectID = Word32
 
-stupidVersionGetter :: String -> Q [Dec]
-stupidVersionGetter q = undefined
-  where
-    name = mkName q
 
 -- Getters/Putters {{{
 -- | Get a Wire-encoded String
@@ -66,13 +61,6 @@ getForType t = case t of
     | name == ''BS.ByteString    -> [| (const getString) |]
     | name == ''Double    -> [| (const getFixed24_8) |]
     | name == ''ObjectID  -> [| (const getWord32le) |]
-    | name == ''NewID  -> [| (const (do
-          strname <- getString
-          name' <- getWord32le
-          id' <- getWord32le
-          pure (strname, name', id')
-        )) 
-      |]
     | name == ''Fd        -> [| getFd |]
   _ -> error $ "unsupported type" <> show t
 
@@ -85,7 +73,6 @@ putForType t = case t of
     | name == ''BS.ByteString    -> [| (const putByteString) |]
     | name == ''Double    -> [| (const putFixed24_8) |]
     | name == ''ObjectID  -> [| (const put) |]
-    | name == ''NewID  -> [| (const (\(x,y,z) -> put x >> put y >> put z)) |]
     | name == ''Fd        -> [| undefined |]
   _ -> error $ "unsupported type" <> show t
 -- }}}
@@ -170,21 +157,21 @@ constructType [x] = x
 constructType (x:xs) = AppT (AppT ArrowT x) $ constructType xs
 
 -- | Returns a function signature declaration for the provided `Function`.
-{-
-mkFunction :: Type -> String ->  -> Dec
-mkFunction monad interfaceName f = SigD (mkName $ functCase interfaceName <> "_" <> f.name) $ constructType $ f.fType
-                                    <> [VarT (mkName "a"), AppT (AppT (AppT monad $ VarT $ mkName "i") $ VarT $ mkName "p") $ TupleT 0]
--}
+mkFunction :: Type -> String -> String -> Dec
+mkFunction monad interfaceName fname = SigD (mkName $ functCase interfaceName <> "_" <> fname)
+    $ AppT (AppT (ConT $ mkName $ "WLEvent_" <> interfaceName <> "_" <> fname) VarT (mkName "a"))
+    $ AppT (AppT (AppT monad $ VarT $ mkName "i") $ VarT $ mkName "p") $ TupleT 0
+
 -- | Returns a declaration of the `Function`s opcode as an integer variable.
 mkOpcode :: String -> String -> Word16 -> [Dec]
 mkOpcode interfaceName fname opcode = 
   [ SigD (mkName $ interfaceName <> "_" <> fname <> "Opcode") (ConT ''Word16)
   , FunD (mkName $ interfaceName <> "_" <> fname <> "Opcode") [Clause [] (NormalB $ LitE $ IntegerL $ fromIntegral opcode) []]
   ]
-{-
+
 -- | Defines a builder for the provided request/event. The Builder is of type `AdditionalParserData -> Arg1 -> ... -> Put`.
-mkBuilder :: String -> Function a -> Q [Dec]
-mkBuilder interfaceName f = do 
+mkBuilder :: String -> String -> Q [Dec]
+mkBuilder interfaceName fname = do 
   (argNames, argStmts) <- genBindsPut f.fType adata
   ret <- NoBindS <$> [e|pure ()|]
   let body = DoE Nothing $ argStmts ++ [ret]
@@ -192,7 +179,6 @@ mkBuilder interfaceName f = do
       SigD (mkName $ functCase interfaceName <> "_" <> f.name <> "Builder") $ constructType $ ConT ''AdditionalParserData:f.fType ++ [ConT ''Put]
     , FunD (mkName $ interfaceName <> "_" <> f.name <> "Builder") [Clause (VarP adata:fmap VarP argNames) (NormalB body) []]
     ]
--}
 {- | Defines an enum-like along with a function to look up the value of each element
 example output:
 data EnumName = A | B | C | D ... deriving Eq
@@ -216,9 +202,13 @@ mkEnum interfaceName enumName enumKV = [
     
     clauses' = [Clause [LitP (IntegerL (fromIntegral v))] (NormalB (ConE (mkName $ enumName' <> k))) [] | (k,v)<-enumKV]
 
-{-
+
+--wl_display_event_builder :: forall a. WaylandEvent a => BS.ByteString -> Get a
+--wl_display_event_builder x = case x of
+
+
 -- | Define an accumulated parser for the entire interface, combining all request xor event parsers.
-mkParserChain :: String -> [Function a] -> Q Exp
+{-mkParserChain :: String -> [Function a] -> Q Exp
 mkParserChain interfaceName [x] = appE (varE $ mkName $ interfaceName <> "_" <> x.name <> "Parser") $ varE $ mkName "dat"
 mkParserChain interfaceName (x:xs) = infixApp (mkParserChain interfaceName xs) op (appE (varE $ mkName $ interfaceName <> "_" <> x.name <> "Parser") $ varE $ mkName "dat") 
   where op = varE (mkName "<|>")
@@ -231,27 +221,42 @@ mkParserChain _ [] = [e|undefined|]--[e| Parser <$> const Nothing |]
 class DefaultIO a where
   defM :: IO a
 
--- TODO: this can be a newtype, check if there's any more fields required.
-data EnumEntry = EnumEntry {
-    name    :: T.Text
-  }
--- }}}
+class InterfaceSet i where
+  interfaceByStringName :: Proxy i -> BS.ByteString -> IO i
+  hasObject :: Proxy i -> BS.ByteString -> Bool
+  interfaceEventParser :: i -> AdditionalParserData -> Get (WaylandM i Client ())
+  interfaceRequestParser :: i -> AdditionalParserData -> Get (WaylandM i Server ())
+
+class Interface x where
+  getEventBuilder :: WaylandEvent a => x -> AdditionalParserData -> Get a
 
 {-
--- | Differentiates between requests and events
+-- | Differentiates between requests and events (unused?)
 data FunctionType = Event | Request
 -- | A Function data type, used to pass data read from XML spec.
+
 data Function _type = Function
   {
     opcode    :: Word16
   , name      :: String
-  , fType     :: [Type]
+  --, fType     :: [Type]
   }
+-}
+-- TODO: this can be a newtype, check if there's any more fields required.
+data EnumEntry = EnumEntry {
+    name    :: T.Text
+  }
+data AdditionalParserData = AdditionalParserData {
+    fds :: [Fd]
+  }
+nodata :: AdditionalParserData
+nodata = AdditionalParserData []
+-- }}}
 
 -- Loading from File {{{
 
 -- | Define a parser for the opcode (last 2 bytes of the header) and the body of a message for the given request/event.
-mkParser :: Type -> String -> Function a -> Q [Dec]
+mkParser :: Type -> String -> a -> Q [Dec]
 mkParser monad interfaceName f = do
   (argNames, argStmts) <- genBindsGet f.fType adata
   opCheck <- [| getWord16le |] <&> BindS (VarP (mkName "op"))
@@ -272,7 +277,7 @@ mkParser monad interfaceName f = do
   where
     name = mkName $ interfaceName <> "_" <> f.name <> "Parser"
     lit = litE $ integerL $ fromIntegral f.opcode
--}
+
 
 
 
@@ -285,11 +290,25 @@ loadProtocols monad isIO path = do
   protocol_files <- filter ((== ".xml") . takeExtension) <$> runIO (listDirectory path)
   concat <$> mapM (loadProtocolFile monad isIO . (path </>)) protocol_files
 
+
+
+mkWlEvent :: String -> Element -> [Dec]
+mkWlEvent interfaceName e = [
+    DataD [] fname [] Nothing [RecC fname $ fmap genArg args] []
+  , InstanceD Nothing [] (AppT (ConT ''WaylandEvent) $ ConT fname) []
+  ]
+  where
+    genArg x = (mkName $ fromJust $ findAttr (qname "name") x, Bang NoSourceUnpackedness NoSourceStrictness, argType x)
+    args = findChildren (qname "arg") e
+    eventName = fromJust $ findAttr (qname "name") e
+    fname = mkName $ "WLEvent_" <> interfaceName <> "_" <> eventName
+
 -- | Load a protocol from the specified `path`. Arguments have the same meaning as in `loadProtocols`.
 loadProtocolFile :: Type -> Bool -> FilePath -> Q [Dec]
 loadProtocolFile monad isIO path = do
   unless isIO $ addDependentFile path
   protocols <- filter ((== qname "protocol") . elName) . onlyElems . parseXML <$> runIO (BS.readFile path)
+  runIO $ print protocols
   let name = fromJust . findAttr (qname "name")
   let findInterfaces = findChildren (qname "interface")
   let protocolDefinitions = fmap (\protocol ->
@@ -313,116 +332,25 @@ loadProtocolFile monad isIO path = do
     ((<&> concat) . mapM (loadInterface monad) . findInterfaces)
     protocols
 
-
--- todo: Function a -> Function
--- do I even need to generate all these functions? can't I make a single dispatch e function?
-
-{-
-class Interface i r e where
-  getEvent :: Proxy r -> i -> AdditionalParserData -> Get e
-  getRequest :: Proxy e -> i -> AdditionalParserData -> Get r
-class HasEvents iface where
-  type EventsOf iface
-  parseEvent :: iface -> BS.ByteString -> Maybe (EventsOf iface)
--}
-
-class WLEvent e where
-  putWLEvent :: e -> Put
-
-mkEvents :: String -> String -> [Element] -> [Dec]
-mkEvents interfaceName prefix events = [
-    DataD [] (mkName prefix') [] Nothing constructors []
-  ]
-  where
-    prefix' = prefix <> "_" <> interfaceName
-    buildBang x = (mkName . fromJust $ findAttr (qname "name") x, Bang NoSourceUnpackedness NoSourceStrictness, argType x)
-    buildRecord x = RecC (mkName $ prefix' <> "_" <> fromJust (findAttr (qname "name") x)) $ buildBang <$> findChildren (qname "arg") x
-    constructors = fmap buildRecord events
-
-{-
-eventParser_I_E = E <$> get_a <*> get_b
--}
-
-mkFunction :: Type -> String -> String -> Element -> [Dec]
-mkFunction monad prefix interfaceName event = [
-    SigD name' (AppT (AppT ArrowT $ ConT eventDataTypeName) $ AppT (AppT ArrowT $ VarT $ mkName "a") $ AppT (AppT monad $ VarT $ mkName "p") $ TupleT 0)
-  ]
-  where
-    name' = mkName $ interfaceName <> "_" <> fromJust (findAttr (qname "name") event)
-    eventDataTypeName = mkName $ prefix <> interfaceName
-
-mkPut :: String -> String -> String -> [(Word16, Element)] -> Q [Dec]
-mkPut interfaceName prefix prefix2 events = mapM mkClause events <&> \m -> bool [
-    SigD (mkName name) (AppT (AppT ArrowT $ ConT ''AdditionalParserData) $ AppT (AppT ArrowT $ ConT $ mkName $ prefix2 <> interfaceName) $ ConT ''Put)
-  , FunD (mkName name) m
-  ] [] (null m)
-  where
-    nestPutters [] = AppE (VarE 'pure) $ ConE '()
-    nestPutters [x] =  x
-    --nestPutters [x,y] = InfixE (Just y) (VarE '(<$>)) (Just x)
-    nestPutters (x:xs) = InfixE (Just $ nestPutters xs) (VarE '(>>)) (Just x)
-    mkClause :: (Word16, Element) -> Q Clause
-    mkClause (opcode, element) = mapM ( \(a,b) -> putForType b <&> (`AppE` (GetFieldE (VarE $ mkName "event") $ fromJust $ findAttr (qname "name") a)) . (`AppE` VarE adata) ) (zip args argTypes) <&> 
-          \x -> (Clause [{-LitP $ IntegerL $ fromIntegral opcode, -}VarP adata
-            , AsP (mkName "event") (RecP (mkName $ prefix2 <> interfaceName <> "_" <> eventName) [])] 
-              $ NormalB $ nestPutters (reverse $ AppE (VarE 'putWord16le) (LitE $ IntegerL $ fromIntegral opcode):x)) []
-      where
-        args = findChildren (qname "arg") element
-        argTypes = fmap argType args
-        eventName = fromJust $ findAttr (qname "name") element
-    name = prefix -- <> "_" <> interfaceName
-mkParser :: String -> String -> String -> [(Word16, Element)] -> Q [Dec]
-mkParser interfaceName prefix prefix2 events = mapM mkClause events <&> \m -> bool [
-    SigD (mkName name) (AppT (AppT ArrowT $ ConT ''Word16) $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''Get) $ ConT $ mkName $ prefix2 <> interfaceName))
-  , FunD (mkName name) m
-  ] [] (null m)
-  where
-    nestGetters [] = undefined
-    nestGetters [x] = AppE (VarE 'pure) x
-    nestGetters [x,y] = InfixE (Just y) (VarE '(<$>)) (Just $ AppE x $ VarE adata)
-    nestGetters (x:xs) = InfixE (Just $ nestGetters xs) (VarE '(<*>)) (Just $ AppE x $ VarE adata)
-    mkClause :: (Word16, Element) -> Q Clause
-    mkClause (opcode, element) = mapM getForType argTypes <&> 
-          \x -> (Clause [LitP $ IntegerL $ fromIntegral opcode, VarP adata] $ NormalB $ nestGetters (reverse $ ConE (mkName $ prefix2 <> interfaceName <> "_" <> eventName) :x)) []
-      where
-        args = findChildren (qname "arg") element
-        argTypes = fmap argType args
-        eventName = fromJust $ findAttr (qname "name") element
-    name = prefix -- <> "_" <> interfaceName
-
-mkWLEvent :: String -> String -> [(Word16, Element)] -> Q [Dec]
-mkWLEvent interfaceName prefix2 events = do
-  put' <- mkPut interfaceName "putEvent" prefix2 events
-  get' <- mkParser interfaceName "getEvent" prefix2 events
-  pure [InstanceD Nothing [] (AppT (ConT ''WaylandEvent) $ ConT . mkName $ prefix2 <> interfaceName) $ put' <> get']
-
 -- | Create all definitions for a single interface - version, the class, parsers, builders, enums, opcodes,
 loadInterface :: Type -> Element -> Q [Dec]
 loadInterface monad int = do 
 
-  --events' <- loadF "event"
-  --requests' <- loadF "request"
-  let events = findChildren (qname "event") int
-  let requests = findChildren (qname "request") int
-  let definitions = concatMap (mkFunction monad "Request_" name') requests ++ concatMap (mkFunction monad "Event_" name') events
-  let opcodes = concatMap (\(x,y) -> mkOpcode name' (fromJust $ findAttr (qname "name") y) x) $ zip [1..] $ findChildren (qname "event") int
-  --let builders = ((++) <$> mapM (mkBuilder name') requests' <*> mapM (mkBuilder name') events') <&> concat
+  events' <- loadF "event"
+  requests' <- loadF "request"
+  let definitions = fmap (mkFunction monad name') requests' ++ fmap (mkFunction monad name') events'
+  let opcodes = concatMap (mkOpcode name') requests' ++ concatMap (mkOpcode name') events'
+  let builders = ((++) <$> mapM (mkBuilder name') requests' <*> mapM (mkBuilder name') events') <&> concat
 
-  {-parserChain <- mkParserChain name' events'
+  parserChain <- mkParserChain name' events'
   let parserChainD = FunD eventParserName [ Clause [VarP (mkName "dat")] (NormalB parserChain) [] ]
   reqParserChain <- mkParserChain name' requests'
-  let reqParserChainD = FunD requestParserName [ Clause [VarP (mkName "dat")] (NormalB reqParserChain) [] ]-}
+  let reqParserChainD = FunD requestParserName [ Clause [VarP (mkName "dat")] (NormalB reqParserChain) [] ]
+
+  let wlEventDefinitions = concatMap (mkWlEvent name') $ findChildren (qname "request") int ++ findChildren (qname "event") int
 
   concat <$> sequence [
-      -- WaylandEvent
-        pure $ mkEvents name' "Request" requests
-      , pure $ mkEvents name' "Event" events
-      , mkWLEvent name' "Event_" $ zip [0..] events
-      , mkWLEvent name' "Request_" $ zip [0..] requests
-      {-, mkParser name' "getEvent" "Event_" $ zip [0..] events
-      , mkPut name' "putEvent" "Event_" $ zip [0..] events
-      , mkParser name' "getRequest" "Request_" $ zip [0..] requests
-      , mkPut name' "putRequest" "Request_" $ zip [0..] requests-}
+      pure wlEventDefinitions
       , pure [
       -- Version
         SigD (mkName $ name' <> "Version") $ ConT ''Word32
@@ -431,8 +359,20 @@ loadInterface monad int = do
       , SigD (mkName $ name' <> "Name") $ ConT ''String
       , ValD (VarP nameName) (NormalB . LitE . StringL $ name') []
       -- Class definition
-      --, mkClass ("Interface_" <> name') ["a", "p"] definitions
+      , mkClass ("Interface_" <> name') ["a", "i", "p"] definitions
       ]
+    -- Request Parsers
+    , concat <$> mapM (mkParser monad name') requests'
+    , singleton <$> ([t| ($(conT . mkName $ "Interface_" <> name') $a $(pure . VarT $ mkName "i") $(pure . VarT $ mkName "p"), InterfaceSet $(pure . VarT $ mkName "i")) =>
+        AdditionalParserData -> Get ($a -> $(pure monad) $(pure . VarT $ mkName "i") $(pure . VarT $ mkName "p") ()) |] <&> SigD requestParserName)
+    , pure [reqParserChainD]
+    -- Event Parsers
+    , concat <$> mapM (mkParser monad name') events'
+    , singleton <$> ([t| ($(conT . mkName $ "Interface_" <> name') $a $(pure . VarT $ mkName "i") $(pure . VarT $ mkName "p"), InterfaceSet $(pure . VarT $ mkName "i")) =>
+        AdditionalParserData -> Get ($a -> $(pure monad) $(pure . VarT $ mkName "i") $(pure . VarT $ mkName "p") ()) |] <&> SigD eventParserName)
+    , pure [parserChainD]
+    -- Builders
+    , builders
     -- Enums
     , pure $ concatMap (uncurry $ mkEnum name') enums'
     -- Opcodes
@@ -442,6 +382,11 @@ loadInterface monad int = do
     name' = fromJust $ findAttr (qname "name") int
     verName = mkName $ name' <> "Version"
     nameName = mkName $ name' <> "Name"
+    a = varT $ mkName "a"
+    
+    eventParserName = mkName $ "eventParser_" <> name'
+    requestParserName = mkName $ "requestParser_" <> name'
+    loadF x = zipWithM loadFunction [0..] $ findChildren (qname x) int
     version' = read . fromJust $ findAttr (qname "version") int
     enums' = loadEnum <$> findChildren (qname "enum") int
 
@@ -451,25 +396,23 @@ loadEnum e' = (fromJust $ findAttr (qname "name") e', f <$> findChildren (qname 
   where
     f e = (fromJust $ findAttr (qname "name") e, read $ fromJust $ findAttr (qname "value") e)
 
--- | Load function data from XML spec.
 {-
-loadFunction :: Word16 -> Element -> Q (Function Event)
-loadFunction opcode element = stack (findChildren (qname "arg") element) <&> \x -> Function 
+-- | Load function data from XML spec.
+loadFunction :: Word16 -> Element -> (Function Event)
+loadFunction opcode element = {-stack (findChildren (qname "arg") element) <&> \x -> -}Function
   {
     opcode = opcode
   , name = fromJust $ findAttr (qname "name") element
-  , fType = x
+  --, fType = x
   }
   where
     stack :: [Element] -> Q [Type]
     stack [x] = pure $ argType x
     stack []  = pure []
     stack (x:xs) = (argType x ++) <$> stack xs
-    --stack (x:xs) = AppT (AppT ArrowT $ argType x) <$> stack xs
-    --stack [] = sequence [[t|Wayland.Types.Wayland ()|]]
     argType :: Element -> [Type]
     argType x = case findAttr (qname "type") x of
-      Nothing -> error $ "arg without a type discovered" <> show element
+      Nothing -> error $ "arg without a type discovered" <> show x
       Just "new_id" -> case findAttr (qname "interface") x of
         Just _ -> [ConT ''ObjectID]
         Nothing -> [ConT ''BS.ByteString, ConT ''Word32, ConT ''ObjectID]
@@ -482,6 +425,7 @@ loadFunction opcode element = stack (findChildren (qname "arg") element) <&> \x 
       Just "fd" -> [ConT ''Fd]
       Just y -> error $ "unknown type: " <> y
 -}
+
 type NewID = (BS.ByteString, Word32, ObjectID)
 
 argType :: Element -> Type
@@ -489,7 +433,7 @@ argType x = case findAttr (qname "type") x of
   Nothing -> error $ "arg without a type discovered" <> show x
   Just "new_id" -> case findAttr (qname "interface") x of
     Just _ -> ConT ''ObjectID
-    Nothing -> ConT ''NewID
+    Nothing -> ConT ''NewID 
   Just "int" -> ConT ''Int
   Just "uint" -> ConT ''Word32
   Just "fixed" -> ConT ''Double

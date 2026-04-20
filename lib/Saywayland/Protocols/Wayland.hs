@@ -13,11 +13,11 @@ import Data.Bimap qualified as BM
 import Data.Binary.Put (runPut)
 import System.Posix (Fd)
 import Control.Lens (makeFieldsId, (^.), (.~), (&), set)
-
+import qualified Data.ByteString.Char8 as BS8
 
 -- TemplateHaskell Definitions {{{
-$(loadProtocolFile (ConT ''WaylandM) False "protocols/wayland.xml")
---}}}
+$(loadProtocolFile (ConT ''Wayland) False "protocols/wayland.xml")
+-- }}}
 
 
 -- Interfaces {{{
@@ -99,456 +99,354 @@ instance DefaultIO WL_surface where
 -- Interface Implementations
 
 -- WL_display {{{
-instance
-        (Protocol_wayland i
-        , HasWlid (Type_wl_callback i) Word32
-        , HasDone (Type_wl_callback i) (MVar ())
-        ) => Interface_wl_display WL_display i Client where
-  -- requests {{{
-  wl_display_sync callbackId self = do
-    -- create the callback
-    callback <- liftIO $ get_wl_callback (Proxy @i)
-    -- register the object, for other threads to access
-    _int <- newObject callbackId $ pack_wl_callback callback
-    -- send the message
-    let body = runPut $ wl_display_syncBuilder nodata callbackId
-    sendMessage self.wlid wl_display_syncOpcode body
-    -- wait until sync request is complete. This might not be the default desired behavior.
-    --takeMVar $ callback ^. done
-  wl_display_get_registry registryID self = do
+instance Interface' WL_display Client where
+  type Event WL_display = Event_wl_display
+  type Request WL_display = Request_wl_display
+  runEvent _display Event_wl_display_delete_id{id = did} = do
     ClientEnv env <- ask
-    registry <- liftIO $ get_wl_registry (Proxy @i)
-    modifyIORef env.objects (Map.insert registryID $ pack_wl_registry registry)
-
-    let body = runPut $ wl_display_get_registryBuilder nodata registryID
-    let opcode = wl_display_get_registryOpcode
-    sendMessage self.wlid opcode body
-    liftIO . strReq ("wl_display", wlDisplayID, "get_registry") $ "wl_registry=" <> show registryID
-  -- }}}
-  -- events {{{
-  wl_display_error objectId code message self = do
-    liftIO $ print $ "Unhandled error from `" <> show objectId <> "`: [" <> show code <> "] " <> message
-  wl_display_delete_id objectId _self = do
+    liftIO $ modifyIORef env.objects (Map.delete did)
+  runEvent _display Event_wl_display_error{object_id, code, message} = do
+    liftIO $ print $ "Unhandled error from `" <> show object_id <> "`: [" <> show code <> "] " <> message
+  runRequest display request@Request_wl_display_sync{callback} = do
+    mvar <- newEmptyMVar
+    callbackObject <- newObject callback WL_callback {wlid=callback, done=mvar}
+    swapMVar callbackObject.done ()
+    sendMessage display.wlid $ runPut $ putEvent nodata request
+  runRequest display request@Request_wl_display_get_registry{registry} = do
     ClientEnv env <- ask
-    liftIO $ modifyIORef env.objects (Map.delete objectId)
-  -- }}}
-instance Interface_wl_display WL_display i Server where
-  -- requests {{{
-  wl_display_sync callbackId self = {-HANDLE sync request-} undefined
-  wl_display_get_registry registryId self = {-HANDLE get_registry request-} undefined
-  -- }}}
-  -- events {{{
-  wl_display_error objectId code message self = {-SEND error event-} undefined
-  wl_display_delete_id id = {-SEND delete_id event-} undefined
-  -- }}}
--- }}}
-
--- WL_registry {{{
-instance InterfaceSet i => Interface_wl_registry WL_registry i Client where
-  -- requests {{{
-  wl_registry_bind name interfaceName interfaceVersion newId self = do
-    ClientEnv env <- ask
-    interfaceFromName name >>= \case
-      Just x -> liftIO (interfaceByStringName (Proxy @i) x) >>= modifyIORef env.objects . Map.insert newId
-      Nothing -> error $ "interface with name `" <> show name <> "` not found."
-    let body = runPut $ wl_registry_bindBuilder nodata name interfaceName interfaceVersion newId
-    sendMessage newId wl_registry_bindOpcode body
-    liftIO . strReq ("wl_registry", self.wlid, "bind") $ "name: " <> show name <> " newId: " <> show interfaceName <> ", " <> show interfaceVersion <> ", " <> show newId
-  -- }}}
-  -- events {{{
-  wl_registry_global name interfaceName interfaceVersion self = do
-    -- likely this requires a version check, like this maybe:
-    -- liftIO $ unless (wl_registryVersion == fromIntegral interfaceVersion) (putStrLn $ "warning: WL_registry version mismatch: [compositor " <> show interfaceVersion <> "], client [" <> show wl_registryVersion <> "]")
-    ClientEnv env <- ask
-    modifyIORef env.globals $ BM.insert interfaceName name
-    liftIO . strReq ("wl_registry", self.wlid, "global") $ "name: " <> show name <> " newID: " <> show interfaceName <> ", " <> show interfaceVersion
-  wl_registry_global_remove name self = do
-    ClientEnv env <- ask
-    modifyIORef env.globals $ BM.deleteR name
-    liftIO . strReq ("wl_registry", self.wlid, "global_remove") $ "name: " <> show name
-  -- }}}
-instance Interface_wl_registry WL_registry i Server where
+    modifyIORef env.objects (Map.insert registry $ Interface $ WL_registry {wlid=registry})
+    let body = runPut $ putEvent nodata request
+    sendMessage display.wlid body
+    liftIO . strReq ("wl_display", wlDisplayID, "get_registry") $ "wl_registry=" <> show registry
 -- }}}
 
 -- WL_callback {{{
-instance Interface_wl_callback WL_callback i Client where
-  wl_callback_done dat self = do
+instance Interface' WL_callback Client where
+  type Event WL_callback = Event_wl_callback
+  type Request WL_callback = Request_wl_callback
+  runEvent callback Event_wl_callback_done{callback_data} = do
     ClientEnv env <- ask
-    modifyIORef env.objects (Map.delete self.wlid)
-    liftIO . strReq ("wl_callback", self.wlid, "done") $ "data: " <> show dat
+    putMVar callback.done ()
+    modifyIORef env.objects (Map.delete callback.wlid)
+    liftIO . strReq ("wl_callback", callback.wlid, "done") $ "data: " <> show callback_data
+  runRequest = undefined
+-- }}}
+
+-- WL_registry {{{
+
+instance Interface' WL_registry Client where
+  type Event WL_registry = Event_wl_registry
+  type Request WL_registry = Request_wl_registry
+  runEvent registry Event_wl_registry_global{name,interface,version} = do
+    -- likely this requires a version check, like this maybe:
+    -- liftIO $ unless (wl_registryVersion == fromIntegral interfaceVersion) (putStrLn $ "warning: WL_registry version mismatch: [compositor " <> show interfaceVersion <> "], client [" <> show wl_registryVersion <> "]")
+    ClientEnv env <- ask
+    modifyIORef env.globals $ BM.insert interface name
+    liftIO . strReq ("wl_registry", registry.wlid, "global") $ "name: " <> show name <> " newID: " <> show interface <> ", " <> show version
+  runEvent registry Event_wl_registry_global_remove{name} = do
+    ClientEnv env <- ask
+    modifyIORef env.globals $ BM.deleteR name
+    liftIO . strReq ("wl_registry", registry.wlid, "global_remove") $ "name: " <> show name
+
+  runRequest registry request@Request_wl_registry_bind{name, id = (interfaceName, interfaceVersion, newId)} = do
+    ClientEnv env <- ask
+    interfaceFromName name >>= \case
+      Just x -> liftIO (env.interfaceFromString $ BS8.unpack x) >>= modifyIORef env.objects . Map.insert newId
+      Nothing -> error $ "interface with name `" <> show name <> "` not found."
+    sendMessage registry.wlid $ runPut $ putEvent nodata request
+    liftIO . strReq ("wl_registry", registry.wlid, "bind") $ "name: " <> show name <> " newId: " <> show interfaceName <> ", " <> show interfaceVersion <> ", " <> show newId
+
 -- }}}
 
 -- WL_compositor {{{
-instance (Protocol_wayland i
-        , HasWlid (Type_wl_region i) Word32
-        , HasWlid (Type_wl_surface i) Word32
-        ) => Interface_wl_compositor WL_compositor i Client where
-  -- requests {{{
-  wl_compositor_create_surface surfaceId self = do
-    ClientEnv env <- ask
-    surface' <- liftIO $ get_wl_surface (Proxy @i)
-    let surface = surface' & wlid .~ surfaceId
-    modifyIORef env.objects $ Map.insert surfaceId $ pack_wl_surface surface
-    let body = runPut $ wl_compositor_create_surfaceBuilder nodata surfaceId
-    sendMessage self.wlid wl_compositor_create_surfaceOpcode body
-    liftIO . strReq ("wl_compositor", self.wlid, "create_surface") $ "surfaceId: " <> show surfaceId
-  wl_compositor_create_region regionId self = do
-    ClientEnv env <- ask
-    region' <- liftIO $ get_wl_region (Proxy @i)
-    let region = region' & wlid .~ regionId
-    modifyIORef env.objects $ Map.insert regionId $ pack_wl_region region
-    let body = runPut $ wl_compositor_create_regionBuilder nodata regionId
-    sendMessage self.wlid wl_compositor_create_regionOpcode body
-    liftIO . strReq ("wl_compositor", self.wlid, "create_region") $ "regionId: " <> show regionId
-  wl_compositor_release self = do
-    let body = runPut $ wl_compositor_releaseBuilder nodata
-    sendMessage self.wlid wl_compositor_create_regionOpcode body
-    liftIO $ strReq ("wl_compositor", self.wlid, "release") ""
-  -- }}}
 
-{-
-instance Interface_wl_compositor WL_compositor i Server where
-  -- requests {{{
-  wl_compositor_create_surface surfaceId self = undefined
-  wl_compositor_create_region regionId self = undefined
-  wl_compositor_release self = undefined
-  -- }}}
--}
+instance Interface' WL_compositor Client where
+  type Event WL_compositor = Event_wl_compositor
+  type Request WL_compositor = Request_wl_compositor
+  runRequest compositor request@Request_wl_compositor_create_surface {id=surfaceId} = do
+    ClientEnv env <- ask
+    modifyIORef env.objects $ Map.insert surfaceId $ Interface $ WL_surface {wlid=surfaceId}
+    sendMessage compositor.wlid $ runPut $ putEvent nodata request
+    liftIO . strReq ("wl_compositor", compositor.wlid, "create_surface") $ "surfaceId: " <> show surfaceId
+  runRequest compositor request@Request_wl_compositor_create_region {id=regionId} = do
+    ClientEnv env <- ask
+    modifyIORef env.objects $ Map.insert regionId $ Interface $ WL_region {wlid=regionId}
+    sendMessage compositor.wlid $ runPut $ putEvent nodata request
+    liftIO . strReq ("wl_compositor", compositor.wlid, "create_region") $ "regionId: " <> show regionId
+  runRequest compositor request@Request_wl_compositor_release = do
+    sendMessage compositor.wlid $ runPut $ putEvent nodata request
+    liftIO $ strReq ("wl_compositor", compositor.wlid, "release") ""
 -- }}}
 
 -- WL_shm_pool {{{
-instance (Protocol_wayland i
-        , HasWlid   (Type_wl_buffer i) Word32
-        , HasOffset (Type_wl_buffer i) Int
-        , HasWidth  (Type_wl_buffer i) Int
-        , HasHeight (Type_wl_buffer i) Int
-        , HasStride (Type_wl_buffer i) Int
-        , HasFormat (Type_wl_buffer i) Enum_wl_shm_format
-        ) => Interface_wl_shm_pool WL_shm_pool i Client where
-  -- requests {{{
-  wl_shm_pool_create_buffer bufId offset' width' height' stride' format' self = do
+instance Interface' WL_shm_pool Client where
+  type Event WL_shm_pool = Event_wl_shm_pool
+  type Request WL_shm_pool = Request_wl_shm_pool
+
+  runRequest shm_pool request@Request_wl_shm_pool_create_buffer{id = bufId, offset=offset', width=width', height=height', stride=stride', format=format'} = do
     ClientEnv env <- ask
-    buffer' <- liftIO $ get_wl_buffer (Proxy @i)
-    let buffer = buffer' & wlid .~ bufId
-                         & offset .~ offset'
-                         & width .~ width'
-                         & height .~ height'
-                         & stride .~ stride'
-                         & format .~ enum_wl_shm_format' format'
-    modifyIORef env.objects $ Map.insert bufId $ pack_wl_buffer buffer
-    liftIO $ strReq ("wl_shm_pool", self.wlid, "create_buffer") $ "bufId=" <> show bufId <> " offset=" <> show offset' <> " width=" <> show width' <> " height=" <> show height' <> " stride=" <> show stride' <> " format=" <> show format'
-  wl_shm_pool_destroy self = do
+    let buffer = WL_buffer {wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = enum_wl_shm_format' format'}
+    modifyIORef env.objects $ Map.insert bufId $ Interface buffer
+    sendMessage shm_pool.wlid $ runPut $ putEvent nodata request
+    liftIO $ strReq ("wl_shm_pool", shm_pool.wlid, "create_buffer") $ "bufId=" <> show bufId <> " offset=" <> show offset' <> " width=" <> show width' <> " height=" <> show height' <> " stride=" <> show stride' <> " format=" <> show format'
+  runRequest shm_pool request@Request_wl_shm_pool_destroy = do
     ClientEnv env <- ask
-    modifyIORef env.objects $ Map.delete self.wlid
-    let body = runPut $ wl_shm_pool_destroyBuilder nodata
-    sendMessage self.wlid wl_shm_pool_destroyOpcode body
-    liftIO $ strReq ("wl_shm_pool", self.wlid, "destroy") ""
-  wl_shm_pool_resize new_size self = do
-    writeIORef self.size new_size
-    liftIO $ strReq ("wl_shm_pool", self.wlid, "resize") ""
-  -- }}}
+    modifyIORef env.objects $ Map.delete shm_pool.wlid
+    sendMessage shm_pool.wlid $ runPut $ putEvent nodata request
+    liftIO $ strReq ("wl_shm_pool", shm_pool.wlid, "destroy") ""
+  runRequest shm_pool request@Request_wl_shm_pool_resize{size} = do
+    writeIORef shm_pool.size size
+    sendMessage shm_pool.wlid $ runPut $ putEvent nodata request
+    liftIO $ strReq ("wl_shm_pool", shm_pool.wlid, "resize") ""
+  runEvent _ _ = undefined
 -- }}}
 
 -- WL_shm {{{
-instance (Protocol_wayland i
-        , HasWlid (Type_wl_shm_pool i) Word32
-        , HasFd (Type_wl_shm_pool i) Fd
-        , HasSize (Type_wl_shm_pool i) (IORef Int)
-        ) => Interface_wl_shm WL_shm i Client where
-  -- requests {{{
-  -- | https://wayland.app/protocols/wayland#wl_shm:request:create_pool
-  wl_shm_create_pool poolId fd' size' self = do
+instance Interface' WL_shm Client where
+  type Event WL_shm = Event_wl_shm
+  type Request WL_shm = Request_wl_shm
+  runRequest shm request@Request_wl_shm_create_pool{id=poolId, fd=fd', size=size'} = do
     ClientEnv env <- ask
     sizeRef <- newIORef size'
-    pool' <- liftIO $ get_wl_shm_pool (Proxy @i)
-    let pool = pool' & wlid .~ poolId
-                     & fd   .~ fd'
-                     & size .~ sizeRef
-    modifyIORef env.objects $ Map.insert poolId $ pack_wl_shm_pool pool
-    let body = runPut $ wl_shm_create_poolBuilder (AdditionalParserData [fd']) poolId fd' size'
-    sendMessageWithFds [fd'] self.wlid wl_shm_create_poolOpcode body
-    liftIO $ strReq ("wl_shm", self.wlid, "create_pool") $ "poolId: " <> show poolId <> " fd: " <> show fd' <> " size: " <> show size'
-  wl_shm_release self = do
+    modifyIORef env.objects $ Map.insert poolId $ Interface $ WL_shm_pool {wlid=poolId, fd=fd', size=sizeRef}
+    sendMessageWithFds [fd'] shm.wlid $ runPut $ putEvent (AdditionalParserData [fd']) request
+    liftIO $ strReq ("wl_shm", shm.wlid, "create_pool") $ "poolId: " <> show poolId <> " fd: " <> show fd' <> " size: " <> show size'
+  runRequest shm request@Request_wl_shm_release{} = do
     ClientEnv env <- ask
-    modifyIORef env.objects $ Map.delete self.wlid
-    let body = runPut $ wl_shm_releaseBuilder nodata
-    sendMessage self.wlid wl_shm_releaseOpcode body
-    liftIO $ strReq ("wl_shm", self.wlid, "release") ""
-  -- }}}
-  -- events {{{
-  wl_shm_format format self = modifyIORef self.formats (fromIntegral format:)
-  -- }}}
+    modifyIORef env.objects $ Map.delete shm.wlid
+    sendMessage shm.wlid $ runPut $ putEvent nodata request
+    liftIO $ strReq ("wl_shm", shm.wlid, "release") ""
+
+  runEvent shm Event_wl_shm_format{format} = modifyIORef shm.formats (fromIntegral format:)
 -- }}}
 
 -- WL_buffer {{{
-instance Interface_wl_buffer WL_buffer i Client where
-  -- requests
-  wl_buffer_destroy = undefined
-  -- events
-  wl_buffer_release = undefined
+instance Interface' WL_buffer Client where
+  type Event WL_buffer = Event_wl_buffer
+  type Request WL_buffer = Request_wl_buffer
+  runRequest buffer Request_wl_buffer_destroy{} = undefined
+  runEvent buffer Event_wl_buffer_release{} = undefined
 -- }}}
 
--- WL_data_offer {{{
-instance Interface_wl_data_offer WL_data_offer i Client where
-  -- requests {{{
-  wl_data_offer_accept = undefined
-  wl_data_offer_receive = undefined
-  wl_data_offer_destroy = undefined
-  wl_data_offer_finish = undefined
-  wl_data_offer_set_actions = undefined
-  -- }}}
-  -- events {{{
-  wl_data_offer_offer = undefined
-  wl_data_offer_source_actions = undefined
-  wl_data_offer_action = undefined
-  -- }}}
--- }}}
+-- wl_data_offer {{{
+instance Interface' WL_data_offer Client where
+  type Event WL_data_offer = Event_wl_data_offer
+  type Request WL_data_offer = Request_wl_data_offer
+  runRequest _ Request_wl_data_offer_accept{} = undefined
+  runRequest _ Request_wl_data_offer_receive{} = undefined
+  runRequest _ Request_wl_data_offer_destroy{} = undefined
+  runRequest _ Request_wl_data_offer_finish{} = undefined
+  runRequest _ Request_wl_data_offer_set_actions{} = undefined
+  runEvent _ Event_wl_data_offer_offer{} = undefined
+  runEvent _ Event_wl_data_offer_source_actions{} = undefined
+  runEvent _ Event_wl_data_offer_action{} = undefined
+--}}}
 
--- WL_data_source {{{
-instance Interface_wl_data_source WL_data_source i Client where
-  -- requests {{{
-  wl_data_source_offer = undefined
-  wl_data_source_destroy = undefined
-  wl_data_source_set_actions = undefined
-  -- }}}
-  -- events {{{
-  wl_data_source_target = undefined
-  wl_data_source_send = undefined
-  wl_data_source_cancelled = undefined
-  wl_data_source_dnd_drop_performed = undefined
-  wl_data_source_dnd_finished = undefined
-  wl_data_source_action = undefined
-  -- }}}
--- }}}
+-- wl_data_source {{{
+instance Interface' WL_data_source Client where
+  type Event WL_data_source = Event_wl_data_source
+  type Request WL_data_source = Request_wl_data_source
+  runRequest _ Request_wl_data_source_offer{} = undefined
+  runRequest _ Request_wl_data_source_destroy{} = undefined
+  runRequest _ Request_wl_data_source_set_actions{} = undefined
+  runEvent _ Event_wl_data_source_target{} = undefined
+  runEvent _ Event_wl_data_source_send{} = undefined
+  runEvent _ Event_wl_data_source_cancelled{} = undefined
+  runEvent _ Event_wl_data_source_dnd_drop_performed{} = undefined
+  runEvent _ Event_wl_data_source_dnd_finished{} = undefined
+  runEvent _ Event_wl_data_source_action{} = undefined
+--}}}
 
--- WL_data_device {{{
-instance Interface_wl_data_device WL_data_device i Client where
-  -- requests {{{
-  wl_data_device_start_drag = undefined
-  wl_data_device_set_selection = undefined
-  wl_data_device_release = undefined
-  -- }}}
-  -- events {{{
-  wl_data_device_data_offer = undefined
-  wl_data_device_enter = undefined
-  wl_data_device_leave = undefined
-  wl_data_device_motion = undefined
-  wl_data_device_drop = undefined
-  wl_data_device_selection = undefined
-  -- }}}
--- }}}
+-- wl_data_device {{{
+instance Interface' WL_data_device Client where
+  type Event WL_data_device = Event_wl_data_device
+  type Request WL_data_device = Request_wl_data_device
+  runRequest _ Request_wl_data_device_start_drag{} = undefined
+  runRequest _ Request_wl_data_device_set_selection{} = undefined
+  runRequest _ Request_wl_data_device_release{} = undefined
+  runEvent _ Event_wl_data_device_data_offer{} = undefined
+  runEvent _ Event_wl_data_device_enter{} = undefined
+  runEvent _ Event_wl_data_device_leave{} = undefined
+  runEvent _ Event_wl_data_device_motion{} = undefined
+  runEvent _ Event_wl_data_device_drop{} = undefined
+  runEvent _ Event_wl_data_device_selection{} = undefined
+--}}}
 
 -- wl_data_device_manager {{{
-instance Interface_wl_data_device_manager WL_data_device_manager i Client where
-  -- requests {{{
-  wl_data_device_manager_create_data_source = undefined
-  wl_data_device_manager_get_data_device = undefined
-  wl_data_device_manager_release = undefined
-  --}}}
-  -- events {{{
-  --}}}
+instance Interface' WL_data_device_manager Client where
+  type Event WL_data_device_manager = Event_wl_data_device_manager
+  type Request WL_data_device_manager = Request_wl_data_device_manager
+  runRequest _ Request_wl_data_device_manager_create_data_source{} = undefined
+  runRequest _ Request_wl_data_device_manager_get_data_device{} = undefined
+  runRequest _ Request_wl_data_device_manager_release{} = undefined
 --}}}
 
 -- wl_shell {{{
-instance Interface_wl_shell WL_shell i Client where
-  -- requests {{{
-  wl_shell_get_shell_surface = undefined
-  --}}}
-  -- events {{{
-  --}}}
+instance Interface' WL_shell Client where
+  type Event WL_shell = Event_wl_shell
+  type Request WL_shell = Request_wl_shell
+  runRequest _ Request_wl_shell_get_shell_surface{} = undefined
 --}}}
 
 -- wl_shell_surface {{{
-instance Interface_wl_shell_surface WL_shell_surface i Client where
-  -- requests {{{
-  wl_shell_surface_pong = undefined
-  wl_shell_surface_move = undefined
-  wl_shell_surface_resize = undefined
-  wl_shell_surface_set_toplevel = undefined
-  wl_shell_surface_set_transient = undefined
-  wl_shell_surface_set_fullscreen = undefined
-  wl_shell_surface_set_popup = undefined
-  wl_shell_surface_set_maximized = undefined
-  wl_shell_surface_set_title = undefined
-  wl_shell_surface_set_class = undefined
-  --}}}
-  -- events {{{
-  wl_shell_surface_ping = undefined
-  wl_shell_surface_configure = undefined
-  wl_shell_surface_popup_done = undefined
-  --}}}
+instance Interface' WL_shell_surface Client where
+  type Event WL_shell_surface = Event_wl_shell_surface
+  type Request WL_shell_surface = Request_wl_shell_surface
+  runRequest _ Request_wl_shell_surface_pong{} = undefined
+  runRequest _ Request_wl_shell_surface_move{} = undefined
+  runRequest _ Request_wl_shell_surface_resize{} = undefined
+  runRequest _ Request_wl_shell_surface_set_toplevel{} = undefined
+  runRequest _ Request_wl_shell_surface_set_transient{} = undefined
+  runRequest _ Request_wl_shell_surface_set_fullscreen{} = undefined
+  runRequest _ Request_wl_shell_surface_set_popup{} = undefined
+  runRequest _ Request_wl_shell_surface_set_maximized{} = undefined
+  runRequest _ Request_wl_shell_surface_set_title{} = undefined
+  runRequest _ Request_wl_shell_surface_set_class{} = undefined
+  runEvent _ Event_wl_shell_surface_ping{} = undefined
+  runEvent _ Event_wl_shell_surface_configure{} = undefined
+  runEvent _ Event_wl_shell_surface_popup_done{} = undefined
 --}}}
+
+
 
 -- wl_surface {{{
-instance Interface_wl_surface WL_surface i Client where
-  -- requests {{{
-  wl_surface_destroy = undefined
-  -- | https://wayland.app/protocols/wayland#wl_surface:request:attach
-  wl_surface_attach bufferId x y self = do
-    let body = runPut $ wl_surface_attachBuilder nodata bufferId x y
-    sendMessage self.wlid wl_surface_attachOpcode body
-    liftIO $ strReq ("wl_surface", self.wlid, "wl_surface_attach") $
+instance Interface' WL_surface Client where
+  type Event WL_surface = Event_wl_surface
+  type Request WL_surface = Request_wl_surface
+  runRequest _ Request_wl_surface_destroy{} = undefined
+  runRequest surface request@Request_wl_surface_attach{buffer=bufferId, x, y} = do
+    sendMessage surface.wlid $ runPut $ putEvent nodata request
+    liftIO $ strReq ("wl_surface", surface.wlid, "wl_surface_attach") $
            "bufferId: " <> show bufferId <> " x: " <> show x <> " y: " <> show y
-  wl_surface_damage x y w h self = undefined
-  wl_surface_frame = undefined
-  wl_surface_set_opaque_region = undefined
-  wl_surface_set_input_region = undefined
-  wl_surface_commit self = do
-    let body = runPut $ wl_surface_commitBuilder nodata
-    sendMessage self.wlid wl_surface_commitOpcode body
-  wl_surface_set_buffer_transform = undefined
-  wl_surface_set_buffer_scale = undefined
-  wl_surface_damage_buffer x y w h self = do
-    let body = runPut $ wl_surface_damage_bufferBuilder nodata x y w h
-    sendMessage self.wlid wl_surface_damage_bufferOpcode body
-  wl_surface_offset = undefined
-  wl_surface_get_release = undefined
-  --}}}
-  -- events {{{
-  wl_surface_enter = undefined
-  wl_surface_leave = undefined
-  wl_surface_preferred_buffer_scale = undefined
-  wl_surface_preferred_buffer_transform = undefined
-  --}}}
---}}}
+  runRequest _ Request_wl_surface_damage{} = undefined
+  runRequest _ Request_wl_surface_frame{} = undefined
+  runRequest _ Request_wl_surface_set_opaque_region{} = undefined
+  runRequest _ Request_wl_surface_set_input_region{} = undefined
+  runRequest surface request@Request_wl_surface_commit{} = do
+    sendMessage surface.wlid $ runPut $ putEvent nodata request
+  runRequest _ Request_wl_surface_set_buffer_transform{} = undefined
+  runRequest _ Request_wl_surface_set_buffer_scale{} = undefined
+  runRequest surface request@Request_wl_surface_damage_buffer{} = do
+    sendMessage surface.wlid $ runPut $ putEvent nodata request
+  runRequest _ Request_wl_surface_offset{} = undefined
+  runRequest _ Request_wl_surface_get_release{} = undefined
+  runEvent _ Event_wl_surface_enter{} = undefined
+  runEvent _ Event_wl_surface_leave{} = undefined
+  runEvent _ Event_wl_surface_preferred_buffer_scale{} = undefined
+  runEvent _ Event_wl_surface_preferred_buffer_transform{} = undefined
+-- }}}
+
 
 -- wl_seat {{{
-instance Interface_wl_seat WL_seat i Client where
-  -- requests {{{
-  wl_seat_get_pointer = undefined
-  wl_seat_get_keyboard = undefined
-  wl_seat_get_touch = undefined
-  wl_seat_release = undefined
-  --}}}
-  -- events {{{
-  wl_seat_capabilities = undefined
-  wl_seat_name = undefined
-  --}}}
+instance Interface' WL_seat Client where
+  type Event WL_seat = Event_wl_seat
+  type Request WL_seat = Request_wl_seat
+  runRequest _ Request_wl_seat_get_pointer{} = undefined
+  runRequest _ Request_wl_seat_get_keyboard{} = undefined
+  runRequest _ Request_wl_seat_get_touch{} = undefined
+  runRequest _ Request_wl_seat_release{} = undefined
+  runEvent _ Event_wl_seat_capabilities{} = undefined
+  runEvent _ Event_wl_seat_name{} = undefined
 --}}}
-
 -- wl_pointer {{{
-instance Interface_wl_pointer WL_pointer i Client where
-  -- requests {{{
-  wl_pointer_set_cursor = undefined
-  wl_pointer_release = undefined
-  --}}}
-  -- events {{{
-  wl_pointer_enter = undefined
-  wl_pointer_leave = undefined
-  wl_pointer_motion = undefined
-  wl_pointer_button = undefined
-  wl_pointer_axis = undefined
-  wl_pointer_frame = undefined
-  wl_pointer_axis_source = undefined
-  wl_pointer_axis_stop = undefined
-  wl_pointer_axis_discrete = undefined
-  wl_pointer_axis_value120 = undefined
-  wl_pointer_axis_relative_direction = undefined
-  --}}}
+instance Interface' WL_pointer Client where
+  type Event WL_pointer = Event_wl_pointer
+  type Request WL_pointer = Request_wl_pointer
+  runRequest _ Request_wl_pointer_set_cursor{} = undefined
+  runRequest _ Request_wl_pointer_release{} = undefined
+  runEvent _ Event_wl_pointer_enter{} = undefined
+  runEvent _ Event_wl_pointer_leave{} = undefined
+  runEvent _ Event_wl_pointer_motion{} = undefined
+  runEvent _ Event_wl_pointer_button{} = undefined
+  runEvent _ Event_wl_pointer_axis{} = undefined
+  runEvent _ Event_wl_pointer_frame{} = undefined
+  runEvent _ Event_wl_pointer_axis_source{} = undefined
+  runEvent _ Event_wl_pointer_axis_stop{} = undefined
+  runEvent _ Event_wl_pointer_axis_discrete{} = undefined
+  runEvent _ Event_wl_pointer_axis_value120{} = undefined
+  runEvent _ Event_wl_pointer_axis_relative_direction{} = undefined
 --}}}
-
 -- wl_keyboard {{{
-instance Interface_wl_keyboard WL_keyboard i Client where
-  -- requests {{{
-  wl_keyboard_release = undefined
-  --}}}
-  -- events {{{
-  wl_keyboard_keymap = undefined
-  wl_keyboard_enter = undefined
-  wl_keyboard_leave = undefined
-  wl_keyboard_key = undefined
-  wl_keyboard_modifiers = undefined
-  wl_keyboard_repeat_info = undefined
-  --}}}
+instance Interface' WL_keyboard Client where
+  type Event WL_keyboard = Event_wl_keyboard
+  type Request WL_keyboard = Request_wl_keyboard
+  runRequest _ Request_wl_keyboard_release{} = undefined
+  runEvent _ Event_wl_keyboard_keymap{} = undefined
+  runEvent _ Event_wl_keyboard_enter{} = undefined
+  runEvent _ Event_wl_keyboard_leave{} = undefined
+  runEvent _ Event_wl_keyboard_key{} = undefined
+  runEvent _ Event_wl_keyboard_modifiers{} = undefined
+  runEvent _ Event_wl_keyboard_repeat_info{} = undefined
 --}}}
-
 -- wl_touch {{{
-instance Interface_wl_touch WL_touch i Client where
-  -- requests {{{
-  wl_touch_release = undefined
-  --}}}
-  -- events {{{
-  wl_touch_down = undefined
-  wl_touch_up = undefined
-  wl_touch_motion = undefined
-  wl_touch_frame = undefined
-  wl_touch_cancel = undefined
-  wl_touch_shape = undefined
-  wl_touch_orientation = undefined
-  --}}}
+instance Interface' WL_touch Client where
+  type Event WL_touch = Event_wl_touch
+  type Request WL_touch = Request_wl_touch
+  runRequest _ Request_wl_touch_release{} = undefined
+  runEvent _ Event_wl_touch_down{} = undefined
+  runEvent _ Event_wl_touch_up{} = undefined
+  runEvent _ Event_wl_touch_motion{} = undefined
+  runEvent _ Event_wl_touch_frame{} = undefined
+  runEvent _ Event_wl_touch_cancel{} = undefined
+  runEvent _ Event_wl_touch_shape{} = undefined
+  runEvent _ Event_wl_touch_orientation{} = undefined
 --}}}
-
 -- wl_output {{{
-instance Interface_wl_output WL_output i Client where
-  -- requests {{{
-  wl_output_release = undefined
-  --}}}
-  -- events {{{
-  wl_output_geometry = undefined
-  wl_output_mode = undefined
-  wl_output_done = undefined
-  wl_output_scale = undefined
-  wl_output_name = undefined
-  wl_output_description = undefined
-  --}}}
+instance Interface' WL_output Client where
+  type Event WL_output = Event_wl_output
+  type Request WL_output = Request_wl_output
+  runRequest _ Request_wl_output_release{} = undefined
+  runEvent _ Event_wl_output_geometry{} = undefined
+  runEvent _ Event_wl_output_mode{} = undefined
+  runEvent _ Event_wl_output_done{} = undefined
+  runEvent _ Event_wl_output_scale{} = undefined
+  runEvent _ Event_wl_output_name{} = undefined
+  runEvent _ Event_wl_output_description{} = undefined
 --}}}
-
--- wl_region {{{
-instance Interface_wl_region WL_region i Client where
-  -- requests {{{
-  wl_region_destroy = undefined
-  wl_region_add = undefined
-  wl_region_subtract = undefined
-  --}}}
-  -- events {{{
-  --}}}
+-- WL_region {{{
+instance Interface' WL_region Client where
+  type Event WL_region = Event_wl_region
+  type Request WL_region = Request_wl_region
+  runRequest _ Request_wl_region_destroy{} = undefined
+  runRequest _ Request_wl_region_add{} = undefined
+  runRequest _ Request_wl_region_subtract{} = undefined
 --}}}
-
--- wl_subcompositor {{{
-instance Interface_wl_subcompositor WL_subcompositor i Client where
-  -- requests {{{
-  wl_subcompositor_destroy = undefined
-  wl_subcompositor_get_subsurface = undefined
-  --}}}
-  -- events {{{
-  --}}}
+-- WL_subcompositor {{{
+instance Interface' WL_subcompositor Client where
+  type Event WL_subcompositor = Event_wl_subcompositor
+  type Request WL_subcompositor = Request_wl_subcompositor
+  runRequest _ Request_wl_subcompositor_destroy{} = undefined
+  runRequest _ Request_wl_subcompositor_get_subsurface{} = undefined
 --}}}
-
--- wl_subsurface {{{
-instance Interface_wl_subsurface WL_subsurface i Client where
-  -- requests {{{
-  wl_subsurface_destroy = undefined
-  wl_subsurface_set_position = undefined
-  wl_subsurface_place_above = undefined
-  wl_subsurface_place_below = undefined
-  wl_subsurface_set_sync = undefined
-  wl_subsurface_set_desync = undefined
-  --}}}
-  -- events {{{
-  --}}}
+-- WL_subsurface {{{
+instance Interface' WL_subsurface Client where
+  type Event WL_subsurface = Event_wl_subsurface
+  type Request WL_subsurface = Request_wl_subsurface
+  runRequest _ Request_wl_subsurface_destroy{} = undefined
+  runRequest _ Request_wl_subsurface_set_position{} = undefined
+  runRequest _ Request_wl_subsurface_place_above{} = undefined
+  runRequest _ Request_wl_subsurface_place_below{} = undefined
+  runRequest _ Request_wl_subsurface_set_sync{} = undefined
+  runRequest _ Request_wl_subsurface_set_desync{} = undefined
 --}}}
-
--- wl_fixes {{{
-instance Interface_wl_fixes WL_fixes i Client where
-  -- requests {{{
-  wl_fixes_destroy = undefined
-  wl_fixes_destroy_registry = undefined
-  --}}}
-  -- events {{{
-  --}}}
+-- WL_fixes {{{
+instance Interface' WL_fixes Client where
+  type Event WL_fixes = Event_wl_fixes
+  type Request WL_fixes = Request_wl_fixes
+  runRequest _ Request_wl_fixes_destroy{} = undefined
+  runRequest _ Request_wl_fixes_destroy_registry{} = undefined
 --}}}
-
 
 -- Wrapper Functions, for QoL
-bindToInterface :: (Interface_wl_registry registry i Client) => registry -> BS.ByteString -> WaylandM i Client (Maybe Word32)
+bindToInterface :: WL_registry -> BS.ByteString -> Wayland Client (Maybe Word32)
 bindToInterface registry intName = do
   ClientEnv env <- ask
-  id <- newObjectId
+  new_id <- newObjectId
   glob <- BM.lookup intName <$> readIORef env.globals
   case glob of
     Just x -> do
-      wl_registry_bind x "wl_shm" wl_shmVersion id registry
-      pure $ Just id
+      runRequest registry Request_wl_registry_bind {name=x, id=(intName,env.interfaceVersion $ BS8.unpack intName,new_id)}
+      pure $ Just new_id
     Nothing -> pure Nothing
 
 -- vim: foldmethod=marker
