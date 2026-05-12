@@ -8,14 +8,13 @@ import Data.Map qualified as Map
 import Data.Bimap qualified as BM
 import Data.String (IsString (fromString))
 import Network.Socket
-import Relude (MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), newIORef, Word16, Word32, readIORef, LazyStrict (toLazy))
+import Relude (MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), newIORef, Word16, Word32, readIORef, LazyStrict (toLazy), traceShow, forM_, for_)
 import Saywayland.Types
 import System.Directory (doesFileExist)
 import System.Environment.Blank (getEnv)
 import System.FilePath
 import Prelude
 
-import Saywayland.Interfaces
 import Network.Socket.ByteString (recvMsg)
 import Foreign.C
 import System.Posix (Fd (Fd))
@@ -25,20 +24,20 @@ import Data.Binary.Get
 import Data.Binary.Put (runPut, putWord16le)
 import Protocol
 import GHC.IORef (IORef(IORef))
+import Data.Data (cast)
 
 -- Listeners {{{
 
--- | listen for client connections in provided socket.
+-- | listen for client connections in provided socket. Don't use it just yet.
 listenForClients :: Socket -> Wayland Server ()
 listenForClients sock = do
   env <- ask
   -- NO IMPL: should create WL_display on start.
-  globalsref <- liftIO $ newIORef Map.empty -- Map.singleton 1 $ mkInterface WL_display
   serial <- liftIO $ newIORef 0
   objectsref <- liftIO $ newIORef Map.empty
   globalsref <- liftIO $ newIORef BM.empty
   handlers <- newIORef []
-  let clientenv = ClientEnv $ ClientEnvironment{socket = sock, {-globals = globalsref,-} counter = serial, objects = objectsref{-, eventHandlers = handlers-}, globals = globalsref} :: WaylandEnv Client
+  let clientenv = ClientEnv $ ClientEnvironment{socket = sock, {-globals = globalsref,-} counter = serial, objects = objectsref, eventHandlers = handlers, globals = globalsref} :: WaylandEnv Client
   _ <- liftIO $ forkIO $ runReaderT (clientLoop Server sock) clientenv
   liftIO $ runReaderT (listenForClients sock) env
 
@@ -47,7 +46,7 @@ listenForClients sock = do
 getHeader :: Get (Word32, Word16, Word16)
 getHeader = (,,) <$> getWord32le <*> getWord16le <*> getWord16le
 
-
+-- | a monstrocity that gets a list of file descriptors from an ancillary data bytestring
 decodeFds :: BS.ByteString -> [Fd]
 decodeFds bs =
   Fd <$> go bs []
@@ -70,7 +69,7 @@ clientLoop' fds bytes' as sock = do
   let newFds = concatMap (decodeFds . cmsgData) $ filter (\x -> cmsgId x == CmsgIdFds) cmsgs
   let bytes = bytes' <> bytes''
   bool (case extractMessage bytes of
-    Just (id, opcode, x,y) -> handleMessage as id (fds ++ newFds) opcode x >> clientLoop' [{-hopefully fd passing won't break horrifyingly-}] y as sock
+    Just (oid, opcode, x,y) -> handleMessage as oid (fds ++ newFds) opcode x >> clientLoop' [{-hopefully fd passing won't break horrifyingly-}] y as sock
     Nothing -> undefined
     )
     (clientLoop' (fds ++ newFds) bytes as sock)
@@ -78,48 +77,35 @@ clientLoop' fds bytes' as sock = do
 
 isPartial :: BS.ByteString -> Bool
 isPartial s = case runGetOrFail getHeader (BL.fromStrict s) of
-              Left (_,_,_) -> False
-              Right (rest,_,(_,_,size)) -> size == 8 * (1 + fromIntegral (BL.length rest))
+              Left (_,_,_) -> True
+              Right (rest,_,(_,_,size)) -> fromIntegral (size - headerSize) > BL.length rest
 extractMessage :: BS.ByteString -> Maybe (Word32,Word16, BS.ByteString, BS.ByteString)
 extractMessage s = case runGetOrFail getHeader (BL.fromStrict s) of
               Left (_,_,_) -> Nothing
-              Right (rest,_,(id,opcode,size)) -> Just (id, opcode, BS.take (fromIntegral size) $ BS.toStrict rest, BS.drop (fromIntegral size) $ BS.toStrict rest)
+              Right (rest',_,(oid,opcode,size)) -> Just (oid, opcode, BS.take payload rest, BS.drop payload rest)
+                where
+                  payload = fromIntegral $ size - headerSize
+                  rest = BS.toStrict rest'
 handleMessage :: Perspective -> ObjectID -> [Fd] -> Word16 -> BS.ByteString -> Wayland Client ()
-handleMessage as id fds opcode msg = do
+handleMessage as oid fds opcode msg = do
   ClientEnv env <- ask
   objects <- readIORef env.objects
-  case Map.lookup id objects of
+  case Map.lookup oid objects of
     Just (Interface x) -> case as of
-      Client -> dispatchClientMessage x id fds opcode msg
+      Client -> dispatchClientMessage x oid fds opcode msg
       Server -> undefined
-    Nothing -> error $ "invalid object reference with id: " <> show id
-  undefined
+    Nothing -> error $ "invalid object reference with id: " <> show oid
 
-dispatchClientMessage
-  :: forall i. Interface' i Client
-  => i
-  -> ObjectID
-  -> [Fd]
-  -> Word16
-  -> BS.ByteString
-  -> Wayland Client ()
+dispatchClientMessage :: forall i. Interface' i Client => i -> ObjectID -> [Fd] -> Word16 -> BS.ByteString -> Wayland Client ()
 dispatchClientMessage x _ fds opcode msg = do
   case runGetOrFail (getEvent opcode $ AdditionalParserData fds) (toLazy msg) of
     Left (_, _, err)      -> fail err
-    Right (_, _, event)   -> runEvent x event
-
-getObjectParser = undefined 
-  {-message <- parseMessage sock
-  case message of
-    Nothing -> liftIO $ print "failed to read message"
-    Just Message {msgSender, msgFunction} -> do
-      env <- ask
-      obj <- liftIO $ readIORef (clientGlobalObjects env)
-      case Map.lookup msgSender obj of
-        Just x -> displayRequest msgFunction >> executeFunction x msgFunction
-        Nothing -> liftIO $ print $ "couldn't find the object: `" <> show msgSender <> "`"
-  clientLoop sock-}
-
+    Right (_, _, event)   -> do
+      runEvent x event
+      ClientEnv env <- ask
+      handlers <- liftIO $ readIORef env.eventHandlers
+      forM_ handlers $ \(EventHandler f) ->
+        for_ (cast event) f
 -- }}}
 
 -- Socket Finding Utilities {{{

@@ -4,14 +4,13 @@ import Relude
 import Protocol
 import Saywayland.Types
 
-import Language.Haskell.TH
 import Control.Lens
 import Data.Binary.Put (runPut)
 
 import Data.Map qualified as Map
-import Saywayland.Protocols.Wayland (Event_wl_output(height))
+import Data.Char (toUpper)
 
-$(loadProtocolFile (ConT ''Wayland) False "protocols/wlr-layer-shell-unstable-v1.xml")
+$(loadProtocolFile False "protocols/wlr-layer-shell-unstable-v1.xml")
 
 data Zwlr_layer_shell_v1 = Zwlr_layer_shell_v1 {wlid :: Word32}
 makeFieldsId ''Zwlr_layer_shell_v1
@@ -23,6 +22,7 @@ instance DefaultIO Zwlr_layer_shell_v1 where
 instance DefaultIO Zwlr_layer_surface_v1 where
   defM = pure $ Zwlr_layer_surface_v1 0
 
+$(generateTables False (\(x1:xs) -> toUpper x1:xs) "protocols/wlr-layer-shell-unstable-v1.xml")
 
 -- zwlr_layer_shell_v1 {{{
 instance Interface' Zwlr_layer_shell_v1 Client where
@@ -31,7 +31,7 @@ instance Interface' Zwlr_layer_shell_v1 Client where
   runEvent shell _ = undefined
   runRequest shell request@Request_zwlr_layer_shell_v1_get_layer_surface{id = layerSurfaceId, surface = surfaceId, output = outputId, layer, namespace} = do
     ClientEnv env <- ask
-    sendMessage shell.wlid $ runPut $ putEvent nodata request
+    sendMessage shell.wlid (getOpcode request) $ runPut $ putEvent nodata request
     let sender = ("zwlr_layer_shell_v1", shell.wlid, "get_layer_surface")
     liftIO
       . strReq sender
@@ -55,21 +55,21 @@ instance Interface' Zwlr_layer_surface_v1 Client where
   type Event Zwlr_layer_surface_v1 = Event_zwlr_layer_surface_v1
   type Request Zwlr_layer_surface_v1 = Request_zwlr_layer_surface_v1
   runEvent ls Event_zwlr_layer_surface_v1_closed = undefined
-  runEvent ls Event_zwlr_layer_surface_v1_configure{} = undefined
+  runEvent ls Event_zwlr_layer_surface_v1_configure{} = pure ()
   runRequest ls request@Request_zwlr_layer_surface_v1_ack_configure{serial} = do
-    sendMessage ls.wlid $ runPut $ putEvent nodata request
+    sendMessage ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
     let sender = ("zwlr_layer_surface_v1", ls.wlid, "ack_configure")
     liftIO . strReq sender $ "serial=" <> show serial
   runRequest ls request@Request_zwlr_layer_surface_v1_set_anchor{anchor} = do
-    sendMessage ls.wlid $ runPut $ putEvent nodata request
+    sendMessage ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
     let sender = ("zwlr_layer_surface_v1", ls.wlid, "set_anchor")
     liftIO . strReq sender $ "anchor=" <> show anchor
   runRequest ls request@Request_zwlr_layer_surface_v1_set_exclusive_zone{zone} = do
-    sendMessage ls.wlid $ runPut $ putEvent nodata request
+    sendMessage ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
     let sender = ("zwlr_layer_surface_v1", ls.wlid, "set_exclusive_zone")
     liftIO . strReq sender $ "zone=" <> show zone
   runRequest ls request@Request_zwlr_layer_surface_v1_set_size{width, height} = do
-    sendMessage ls.wlid $ runPut $ putEvent nodata request
+    sendMessage ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
     let sender = ("zwlr_layer_surface_v1", ls.wlid, "set_size")
     liftIO . strReq sender $ mconcat ["width=", show width, " height=", show height]
   runRequest ls Request_zwlr_layer_surface_v1_destroy{} = undefined
@@ -78,6 +78,4 @@ instance Interface' Zwlr_layer_surface_v1 Client where
   runRequest ls Request_zwlr_layer_surface_v1_set_layer{} = undefined
   runRequest ls Request_zwlr_layer_surface_v1_set_margin{} = undefined
 -- }}}
-
-
 -- vim: foldmethod=marker

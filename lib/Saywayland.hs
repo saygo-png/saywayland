@@ -27,7 +27,6 @@ import Relude hiding (ByteString, get, put)
 import Saywayland.Types
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
 import System.Posix.Types (Fd)
-import Saywayland.Interfaces
 
 {-
 -- Event helpers {{{

@@ -1,4 +1,4 @@
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeFamilies, TemplateHaskell, FunctionalDependencies #-}
 module Saywayland.Types where
 
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
@@ -15,11 +15,15 @@ import Network.Socket (Socket)
 import Relude hiding (ByteString, get, put)
 import SaywaylandTH
 import System.Posix (Fd)
+import Control.Monad ((<=<))
 
 import Data.ByteString qualified as BS
 import Network.Socket.ByteString.Lazy (sendAll)
 import Network.Socket.ByteString (sendManyWithFds)
 import Data.Data (cast)
+import GHC.Records (HasField)
+import Control.Lens (makeFieldsId)
+
 
 -- Constants {{{
 
@@ -28,7 +32,7 @@ headerSize :: Word16
 headerSize = 8
 
 -- | Constant representing the Wayland null, which is just 0.
-waylandNull :: WlUint
+waylandNull :: Word32
 waylandNull = 0
 
 -- | Constant representing the wl_display ID which is always 1 in Wayland.
@@ -38,172 +42,42 @@ wlDisplayID = 1
 -- }}}
 
 -- Types {{{
+type ObjectID = Word32
+type NewID = (BS.ByteString, Word32, ObjectID)
 
--- | Wayland Uint
-newtype WlUint = WlUint {unWlUint :: Word32}
-  deriving newtype (Eq, Ord, Num, Integral, Bits, Real, Enum, Show)
-
-instance Binary WlUint where
-  get = WlUint <$> getWord32le
-  put (WlUint x) = putWord32le x
-
--- | Wayland object IDs are Uint.
-type WlID = WlUint
-
--- | Wayland Int.
-newtype WlInt = WlInt {unWlInt :: Int32}
-  deriving newtype (Eq, Ord, Num, Integral, Bits, Real, Enum, Show)
-
-instance Binary WlInt where
-  get = WlInt <$> getInt32le
-  put (WlInt x) = putInt32le x
-
--- | A Wayland length-prefixed, null-terminated, padded string on the wire.
-newtype WlString = WlString {unWlString :: BSL.ByteString}
-  deriving newtype (Eq, Ord, Semigroup, Monoid, IsString)
-
-instance Show WlString where
-  show = BSL.unpackChars . (.unWlString)
+-- | Created to obtain HasWlid within Types module. There are way better ways to achieve this.
+data Tmp = Tmp {wlid :: ObjectID}
+makeFieldsId ''Tmp
 
 -- | Round a byte length up to the nearest 4-byte boundary.
 roundLength :: Word32 -> Int64
 roundLength l = (fromIntegral l + 3) .&. (-4)
 
-instance Binary WlString where
-  get = do
-    len <- getWord32le
-    str <- getLazyByteString (fromIntegral len)
-    skip $ fromIntegral (roundLength len - fromIntegral len)
-    return $ WlString str
-  put (WlString bs) = do
-    let str = bs <> "\0"
-    putWord32le (fromIntegral $ BSL.length str)
-    putLazyByteString str
-    let paddingBytes = roundLength (fromIntegral $ BSL.length str) - BSL.length str
-    replicateM_ (fromIntegral paddingBytes) (putWord8 0)
+-- | A Default-like structure, but using IO
+class DefaultIO a where
+  defM :: IO a
 
-{-
--- | Every interface that can appear as the object of a Wayland event.
-data WaylandInterface
-  = WlSurface
-  | WlShmPool
-  | WlBuffer
-  | WlCompositor
-  | ZwlrLayerSurfaceV1
-  | ZwlrLayerShellV1
-  | WlDisplay
-  | WlRegistry
-  | WlShm
-  | WlOutput
-  | ExtWorkspaceManagerV1
-  | ExtWorkspaceHandleV1
-  | ExtWorkspaceGroupHandleV1
-  deriving stock (Show)
--}
-
-type role WlArray representational
-
--- | Wayland array type.
-newtype WlArray a = WlArray [a]
-  deriving stock (Show, Foldable)
-
--- | Little-endian length-prefixed array of Word32.
-instance Binary (WlArray WlUint) where
-  get = do
-    len <- getWord32le
-    bytes <- getLazyByteString $ roundLength len
-    let elems = runGet (replicateM (fromIntegral len `div` 4) getWord32le) bytes
-    return $ WlArray (coerce elems)
-  put (WlArray xs) = do
-    let len = fromIntegral (Relude.length xs * 4) :: Word32
-    putWord32le len
-    mapM_ putWord32le ((.unWlUint) <$> xs)
-
--- | Type representing Wayland color formats.
-data WlColorFormat
-  = Argb8888
-  | Xrgb8888
-  | UnknownColorFormat WlUint
-  deriving stock (Eq, Ord)
-
-instance Show WlColorFormat where
-  show Argb8888 = "argb8888"
-  show Xrgb8888 = "xrgb8888"
-  show (UnknownColorFormat n) = "Unknown color format " <> show n
-
-instance Binary WlColorFormat where
-  put :: WlColorFormat -> Put
-  put =
-    put . \case
-      Argb8888 -> 0 :: WlUint
-      Xrgb8888 -> 1
-      UnknownColorFormat u -> u
-
-  get :: Get WlColorFormat
-  get =
-    get >>= \case
-      (0 :: WlUint) -> pure Argb8888
-      1 -> pure Xrgb8888
-      n -> pure $ UnknownColorFormat n
-{-
-$( declareEvents
-     --
-     [ event "WlDisplay" 0 "error" [("errorObjectID", ty ''WlUint), ("errorCode", ty ''WlUint), ("errorMessage", ty ''WlString)]
-     , event "WlDisplay" 1 "deleteID" [("deletedID", ty ''WlUint)]
-     , --
-       event "WlRegistry" 0 "global" [("name", ty ''WlUint), ("interface", ty ''WlString), ("version", ty ''WlUint)]
-     , --
-       event "WlShm" 0 "format" [("format", ty ''WlUint)]
-     , --
-       event "ZwlrLayerSurfaceV1" 0 "configure" [("serial", ty ''WlUint), ("width", ty ''WlUint), ("height", ty ''WlUint)]
-     , --
-       event "ExtWorkspaceManagerV1" 0 "workspaceGroup" [("handleID", appTy ''ObjectID 'ExtWorkspaceGroupHandleV1)]
-     , event "ExtWorkspaceManagerV1" 1 "workspace" [("handleID", appTy ''ObjectID 'ExtWorkspaceHandleV1)]
-     , event "ExtWorkspaceManagerV1" 2 "done" []
-     , --
-       event "ExtWorkspaceHandleV1" 0 "id" [("id", ty ''WlString)]
-     , event "ExtWorkspaceHandleV1" 1 "name" [("name", ty ''WlString)]
-     , event "ExtWorkspaceHandleV1" 2 "coordinates" [("coordinates", appTy ''WlArray ''WlUint)]
-     , event "ExtWorkspaceHandleV1" 3 "state" [("state", ty ''WlUint)]
-     , event "ExtWorkspaceHandleV1" 4 "capabilities" [("capabilities", ty ''WlUint)]
-     , event "ExtWorkspaceHandleV1" 5 "removed" []
-     , --
-       event "ExtWorkspaceGroupHandleV1" 0 "capabilities" [("capabilities", ty ''WlUint)]
-     , event "ExtWorkspaceGroupHandleV1" 1 "output_enter" [("output", appTy ''ObjectID 'WlOutput)]
-     , event "ExtWorkspaceGroupHandleV1" 2 "output_leave" [("output", appTy ''ObjectID 'WlOutput)]
-     , event "ExtWorkspaceGroupHandleV1" 3 "workspace_enter" [("workspace", appTy ''ObjectID 'ExtWorkspaceHandleV1)]
-     , event "ExtWorkspaceGroupHandleV1" 4 "workspace_leave" [("workspace", appTy ''ObjectID 'ExtWorkspaceHandleV1)]
-     , event "ExtWorkspaceGroupHandleV1" 5 "removed" []
-     , --
-       event "WlBuffer" 0 "release" []
-     ]
- )-}
-
--- | Globals storage by name.
---type Globals = Map WlUint (Header, BodyWlRegistry_global)
-
-{- | Record containing the essential state needed for Wayland.
-The state contained is only essential, the user is expected to make their own structures
-to store state required for their specific application. This can be done using event handlers made with 'onEvent'.
--}
-
+-- | Perspective of the current Wayland Environment
 data Perspective = Client | Server
 
+-- | EventHandlers, called whenever an event is received | TODO: switch Client to p
 data EventHandler where
-  EventHandler :: WaylandEvent e => (e -> IO ()) -> EventHandler
+  EventHandler :: (Typeable e, WaylandEvent e) => (e -> Wayland Client ()) -> EventHandler
 
+-- | Wayland Environment
 data WaylandEnv (p :: Perspective) where
   ClientEnv :: ClientEnvironment Client -> WaylandEnv 'Client
   ServerEnv :: ServerEnvironment -> WaylandEnv 'Server
 
 data ServerEnvironment = ServerEnvironment
   {
+  -- | global server socket
     socket  :: Socket
-  , clients :: IORef [ClientEnvironment Server]
+  -- | currently connected clients
+  , clients :: IORef (Map Int (ClientEnvironment Server))
+  -- | Id of the currently attached client. Nothing if the env is global.
+  , attached:: Maybe Int
   }
-
--- | Unique name given to an interface.
-type InterfaceName = Word32
 
 data ClientEnvironment (p :: Perspective) = ClientEnvironment
   {
@@ -211,13 +85,14 @@ data ClientEnvironment (p :: Perspective) = ClientEnvironment
   , counter :: IORef Word32
   , objects :: IORef (Map Word32 (Interface p))
   , globals :: IORef (BM.Bimap {-string name-}BS.ByteString {-global name-}Word32)
-  , interfaceFromString :: String -> IO (Interface p)
-  , interfaceVersion :: String -> Word32
+  , interfaceTable :: IORef (Map String (IO (Interface p)))
+  , versionTable   :: IORef (Map String Word32)
   , eventHandlers :: IORef [EventHandler]
   }
 
 class ( WaylandEvent (Event a)
       , WaylandEvent (Request a)
+      , HasWlid a ObjectID
       , Typeable a) => Interface' a (p :: Perspective) where
   type Event a
   type Request a
@@ -227,67 +102,37 @@ class ( WaylandEvent (Event a)
 data Interface (p :: Perspective) where
   Interface :: (Interface' i p, Typeable i) => i -> Interface p
 
+-- | Cast provided interface into proxied type.
 proxyInterface :: forall i p. Typeable i => Proxy i -> Interface p -> Maybe i
 proxyInterface _ (Interface i) = cast i
 
-
-class WaylandEvent e where
+class Typeable e => WaylandEvent e where
   getEvent :: Word16 -> AdditionalParserData -> Get e
   putEvent :: AdditionalParserData -> e -> Put
+  getOpcode :: e -> Word16
 
+-- | Additional data passed to the TemplateHaskell-generated `getEvent`.
 data AdditionalParserData = AdditionalParserData {
     fds :: [Fd]
   }
+
+-- | predefined empty AdditionalParserData
 nodata :: AdditionalParserData
 nodata = AdditionalParserData []
 
 -- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.
 type Wayland p = ReaderT (WaylandEnv p) IO
-
-
-
--- | Type representing a Wayland buffer.
-{-data Buffer = Buffer
-  { id :: ObjectID 'WlBuffer
-  , offset :: WlInt
-  -- ^ Memory offset of the buffer.
-  }
--}
--- | Type representing a Wayland header.
-data Header = Header
-  { objectID :: WlID
-  , opCode :: Word16
-  {- ^ Operation codes in Wayland are 0 indexed, separate for events and requests.
-  They are numbered based on the order of appearance in the protocol.
-  -}
-  , size :: Word16
-  }
-  deriving stock (Show)
-
-instance Binary Header where
-  put :: Header -> Put
-  put header = do
-    put header.objectID
-    putWord16le header.opCode
-    putWord16le header.size
-  get :: Get Header
-  get = Header <$> get <*> getWord16le <*> getWord16le
-
-instance ToText Header where
-  toText :: Header -> Text
-  toText (Header objectID opCode size) =
-    mconcat ["-- wl_header: objectID=", show objectID, " opCode=", show opCode, " size=", show size]
-
 -- }}}
 
 -- Utils {{{
-
+-- | function that increases the counter by 1 and returns it's new value
 newObjectId :: Wayland 'Client Word32
 newObjectId = do
     ClientEnv env <- ask
     liftIO $ modifyIORef env.counter (+ 1)
     liftIO $ readIORef env.counter
 
+-- | function that inserts the given interface to the objects map with provided id as key.
 newObject :: Typeable i => Interface' i 'Client => Word32 -> i -> Wayland 'Client i
 newObject intId int = do
     ClientEnv env <- ask
@@ -296,25 +141,27 @@ newObject intId int = do
 {- | Convenience function for sending a Wayland message.
 See 'mkMessage'.
 -}
-sendMessageWithFds :: [Fd] -> Word32 -> BSL.ByteString -> Wayland 'Client ()
-sendMessageWithFds fds objectID opcodeWithMessageBody = do
+sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland 'Client ()
+sendMessageWithFds fds objectID opcode messageBody = do
   socket <- asks (\(ClientEnv env) -> env.socket)
-  liftIO $ sendManyWithFds socket [BS.toStrict $ mkMessage objectID opcodeWithMessageBody] fds
-sendMessage :: Word32 -> BSL.ByteString -> Wayland 'Client ()
-sendMessage objectID opcodeWithMessageBody = do
+  liftIO $ sendManyWithFds socket [BS.toStrict $ mkMessage objectID opcode messageBody] fds
+sendMessage :: Word32 -> Word16 -> BSL.ByteString -> Wayland 'Client ()
+sendMessage objectID opcode messageBody = do
   wlSocket <- asks (\(ClientEnv env) -> env.socket)
-  liftIO . sendAll wlSocket $ mkMessage objectID opcodeWithMessageBody
+  let msg = mkMessage objectID opcode messageBody
+  liftIO . sendAll wlSocket $ msg
 
 {- | Convenience function for formatting a Wayland message.
 It takes an objectID, operation code and a message body.
 The header is generated based on this, the size is derived automatically.
 -}
-mkMessage :: Word32 -> BSL.ByteString -> BSL.ByteString
-mkMessage objectID opcodeWithMessageBody =
+mkMessage :: Word32 -> Word16 -> BSL.ByteString -> BSL.ByteString
+mkMessage objectID opcode messageBody =
   runPut $ do
-    put objectID
-    putWord16le $ 6 + fromIntegral (BSL.length opcodeWithMessageBody)
-    putLazyByteString opcodeWithMessageBody
+    putWord32le objectID
+    putWord16le opcode
+    putWord16le $ 8 + fromIntegral (BSL.length messageBody)
+    putLazyByteString messageBody
 
 {- | Convenience function for formatting events.
 Events are colored in magenta following the wayland.app colorscheme.
@@ -340,15 +187,17 @@ interfaceFromName n = do
   glob <- readIORef env.globals
   pure $ BM.lookupR n glob
 
+-- | get an Interface from objects table using its Id.
 getInterface :: Word32 -> Wayland p (Maybe (Interface p))
 getInterface objectID = do
   ClientEnv env <- ask
   Map.lookup objectID <$> readIORef env.objects
 
+-- | getInterface chained with proxyInterface.
 getInterface' :: forall i p. (Typeable i, Interface' i p) => Proxy i -> Word32 -> Wayland p (Maybe i)
-getInterface' _ objectID = do
+getInterface' p objectID = do
   ClientEnv env <- ask
-  cast . Map.lookup objectID <$> readIORef env.objects
+  (proxyInterface p <=< Map.lookup objectID) <$> readIORef env.objects
 -- }}}
 
 -- vim: foldmethod=marker
