@@ -23,6 +23,7 @@ import Network.Socket.ByteString (sendManyWithFds)
 import Data.Data (cast)
 import GHC.Records (HasField)
 import Control.Lens (makeFieldsId)
+import Debug.Trace (traceIO)
 
 
 -- Constants {{{
@@ -110,6 +111,7 @@ class Typeable e => WaylandEvent e where
   getEvent :: Word16 -> AdditionalParserData -> Get e
   putEvent :: AdditionalParserData -> e -> Put
   getOpcode :: e -> Word16
+  showEvent :: ObjectID -> e -> String
 
 -- | Additional data passed to the TemplateHaskell-generated `getEvent`.
 data AdditionalParserData = AdditionalParserData {
@@ -126,14 +128,14 @@ type Wayland p = ReaderT (WaylandEnv p) IO
 
 -- Utils {{{
 -- | function that increases the counter by 1 and returns it's new value
-newObjectId :: Wayland 'Client Word32
+newObjectId :: Wayland p Word32
 newObjectId = do
     ClientEnv env <- ask
     liftIO $ modifyIORef env.counter (+ 1)
     liftIO $ readIORef env.counter
 
 -- | function that inserts the given interface to the objects map with provided id as key.
-newObject :: Typeable i => Interface' i 'Client => Word32 -> i -> Wayland 'Client i
+newObject :: Typeable i => Interface' i 'Client => Word32 -> i -> Wayland p i
 newObject intId int = do
     ClientEnv env <- ask
     liftIO $ modifyIORef env.objects (Map.insert intId $ Interface int)
@@ -141,15 +143,30 @@ newObject intId int = do
 {- | Convenience function for sending a Wayland message.
 See 'mkMessage'.
 -}
-sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland 'Client ()
+sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
 sendMessageWithFds fds objectID opcode messageBody = do
   socket <- asks (\(ClientEnv env) -> env.socket)
   liftIO $ sendManyWithFds socket [BS.toStrict $ mkMessage objectID opcode messageBody] fds
-sendMessage :: Word32 -> Word16 -> BSL.ByteString -> Wayland 'Client ()
+sendMessage :: Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
 sendMessage objectID opcode messageBody = do
   wlSocket <- asks (\(ClientEnv env) -> env.socket)
   let msg = mkMessage objectID opcode messageBody
   liftIO . sendAll wlSocket $ msg
+
+{- | Convenience function for formatting events, before sending them.
+Events are colored in magenta following the wayland.app colorscheme.
+-}
+sendMessage' :: (WaylandEvent e) => e -> Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
+sendMessage' e o op body = do
+  colorize <- liftIO getColorize
+  liftIO (traceIO $ colorize Vivid Magenta $ showEvent o e)
+  sendMessage o op body
+-- | sendMessageWithFds, but with sendMessage' aspect.
+sendMessageWithFds' :: (WaylandEvent e) => e -> [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
+sendMessageWithFds' e fd o op body = do
+  colorize <- liftIO getColorize
+  liftIO (traceIO $ colorize Vivid Magenta $ showEvent o e)
+  sendMessageWithFds fd o op body
 
 {- | Convenience function for formatting a Wayland message.
 It takes an objectID, operation code and a message body.
@@ -163,21 +180,13 @@ mkMessage objectID opcode messageBody =
     putWord16le $ 8 + fromIntegral (BSL.length messageBody)
     putLazyByteString messageBody
 
-{- | Convenience function for formatting events.
-Events are colored in magenta following the wayland.app colorscheme.
--}
-strReq :: (Text, Word32, Text) -> Text -> IO ()
-strReq (object, objectID, method) text = do
-  colorize <- getColorize
-  putTextLn . colorize Vivid Magenta $ mconcat ["        -> ", object, "@", show objectID, ".", method, ": ", text]
-  where
-    getColorize :: (IsString s, Semigroup s) => IO (ColorIntensity -> Color -> s -> s)
-    getColorize = do
-      ansiSupport <- hNowSupportsANSI stdout
-      pure
-        $ if ansiSupport
-          then \ci c t -> fromString (setSGRCode [SetColor Foreground ci c]) <> t <> fromString (setSGRCode [Reset])
-          else const $ const id
+getColorize :: (IsString s, Semigroup s) => IO (ColorIntensity -> Color -> s -> s)
+getColorize = do
+  ansiSupport <- hNowSupportsANSI stdout
+  pure
+    $ if ansiSupport
+      then \ci c t -> fromString (setSGRCode [SetColor Foreground ci c]) <> t <> fromString (setSGRCode [Reset])
+      else const $ const id
 
 
 -- | helper function for getting an object from a global
@@ -199,5 +208,11 @@ getInterface' p objectID = do
   ClientEnv env <- ask
   (proxyInterface p <=< Map.lookup objectID) <$> readIORef env.objects
 -- }}}
+
+getServerClientEnv :: Wayland Server (Maybe (ClientEnvironment Server))
+getServerClientEnv = do
+  ServerEnv senv <- ask
+  clients <- readIORef senv.clients
+  pure $ senv.attached >>= (`Map.lookup` clients)
 
 -- vim: foldmethod=marker

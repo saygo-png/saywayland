@@ -31,22 +31,7 @@ instance Interface' Zwlr_layer_shell_v1 Client where
   runEvent shell _ = undefined
   runRequest shell request@Request_zwlr_layer_shell_v1_get_layer_surface{id = layerSurfaceId, surface = surfaceId, output = outputId, layer, namespace} = do
     ClientEnv env <- ask
-    sendMessage shell.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    let sender = ("zwlr_layer_shell_v1", shell.wlid, "get_layer_surface")
-    liftIO
-      . strReq sender
-      $ mconcat
-      [ "newID="
-      , show layerSurfaceId
-      , " wl_surface="
-      , show surfaceId
-      , " output="
-      , show outputId
-      , " layer="
-      , show layer
-      , " namespace="
-      , show namespace
-      ]
+    sendMessage' request shell.wlid (getOpcode request) $ runPut $ putEvent nodata request
     modifyIORef env.objects $ Map.insert layerSurfaceId $ Interface Zwlr_layer_surface_v1 {wlid=layerSurfaceId}
   runRequest shell Request_zwlr_layer_shell_v1_destroy = undefined
 -- }}}
@@ -57,21 +42,13 @@ instance Interface' Zwlr_layer_surface_v1 Client where
   runEvent ls Event_zwlr_layer_surface_v1_closed = undefined
   runEvent ls Event_zwlr_layer_surface_v1_configure{} = pure ()
   runRequest ls request@Request_zwlr_layer_surface_v1_ack_configure{serial} = do
-    sendMessage ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    let sender = ("zwlr_layer_surface_v1", ls.wlid, "ack_configure")
-    liftIO . strReq sender $ "serial=" <> show serial
+    sendMessage' request ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest ls request@Request_zwlr_layer_surface_v1_set_anchor{anchor} = do
-    sendMessage ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    let sender = ("zwlr_layer_surface_v1", ls.wlid, "set_anchor")
-    liftIO . strReq sender $ "anchor=" <> show anchor
+    sendMessage' request ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest ls request@Request_zwlr_layer_surface_v1_set_exclusive_zone{zone} = do
-    sendMessage ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    let sender = ("zwlr_layer_surface_v1", ls.wlid, "set_exclusive_zone")
-    liftIO . strReq sender $ "zone=" <> show zone
+    sendMessage' request ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest ls request@Request_zwlr_layer_surface_v1_set_size{width, height} = do
-    sendMessage ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    let sender = ("zwlr_layer_surface_v1", ls.wlid, "set_size")
-    liftIO . strReq sender $ mconcat ["width=", show width, " height=", show height]
+    sendMessage' request ls.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest ls Request_zwlr_layer_surface_v1_destroy{} = undefined
   runRequest ls Request_zwlr_layer_surface_v1_get_popup{} = undefined
   runRequest ls Request_zwlr_layer_surface_v1_set_keyboard_interactivity{} = undefined

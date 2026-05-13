@@ -146,13 +146,12 @@ instance Interface' WL_display Client where
     mvar <- newEmptyMVar
     callbackObject <- newObject callback WL_callback {wlid=callback, done=mvar}
     swapMVar callbackObject.done ()
-    sendMessage display.wlid (getOpcode request) $ runPut $ putEvent nodata request
+    sendMessage' request display.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest display request@Request_wl_display_get_registry{registry} = do
     ClientEnv env <- ask
     modifyIORef env.objects (Map.insert registry $ Interface $ WL_registry {wlid=registry})
     let body = runPut $ putEvent nodata request
-    sendMessage display.wlid (getOpcode request) body
-    liftIO . strReq ("wl_display", wlDisplayID, "get_registry") $ "wl_registry=" <> show registry
+    sendMessage' request display.wlid (getOpcode request) body
 -- }}}
 
 -- WL_callback {{{
@@ -163,14 +162,16 @@ instance Interface' WL_callback Client where
     ClientEnv env <- ask
     putMVar callback.done ()
     modifyIORef env.objects (Map.delete callback.wlid)
-    liftIO . strReq ("wl_callback", callback.wlid, "done") $ "data: " <> show callback_data
+
   runRequest _ _ = pure ()
 instance Interface' WL_callback Server where
   type Event WL_callback = Event_wl_callback
   type Request WL_callback = Request_wl_callback
   runEvent callback Event_wl_callback_done{callback_data} = do
     putMVar callback.done ()
-    ClientEnv env <- ask
+    ServerEnv senv <- ask
+    clients <- readIORef senv.clients
+    let env = fromJust $ senv.attached >>= (`Map.lookup` clients)
     modifyIORef env.objects $ Map.delete callback.wlid
   runRequest _ _ = pure ()
  
@@ -192,11 +193,11 @@ instance Interface' WL_registry Client where
         when (clientVer > version) $
           modifyIORef env.versionTable $ Map.insert (BS8.unpack interface') version
       Nothing -> pure ()
-    liftIO . strReq ("wl_registry", registry.wlid, "global") $ "name: " <> show name <> " newID: " <> show interface <> ", " <> show version
+
   runEvent registry Event_wl_registry_global_remove{name} = do
     ClientEnv env <- ask
     modifyIORef env.globals $ BM.deleteR name
-    liftIO . strReq ("wl_registry", registry.wlid, "global_remove") $ "name: " <> show name
+
 
   runRequest registry request@Request_wl_registry_bind{name, id = (interfaceName, interfaceVersion, newId)} = do
     ClientEnv env <- ask
@@ -206,8 +207,8 @@ instance Interface' WL_registry Client where
         Interface y <- liftIO y'
         modifyIORef env.objects . Map.insert newId $ Interface $ y & wlid .~ newId
       Nothing -> error $ "interface with name `" <> show name <> "` not found."
-    sendMessage registry.wlid  (getOpcode request) $ runPut $ putEvent nodata request
-    liftIO . strReq ("wl_registry", registry.wlid, "bind") $ "name: " <> show name <> " newId: " <> show interfaceName <> ", " <> show interfaceVersion <> ", " <> show newId
+    sendMessage' request registry.wlid  (getOpcode request) $ runPut $ putEvent nodata request
+
 
 -- }}}
 
@@ -219,16 +220,16 @@ instance Interface' WL_compositor Client where
   runRequest compositor request@Request_wl_compositor_create_surface {id=surfaceId} = do
     ClientEnv env <- ask
     modifyIORef env.objects $ Map.insert surfaceId $ Interface $ WL_surface {wlid=surfaceId}
-    sendMessage compositor.wlid  (getOpcode request) $ runPut $ putEvent nodata request
-    liftIO . strReq ("wl_compositor", compositor.wlid, "create_surface") $ "surfaceId: " <> show surfaceId
+    sendMessage' request compositor.wlid  (getOpcode request) $ runPut $ putEvent nodata request
+
   runRequest compositor request@Request_wl_compositor_create_region {id=regionId} = do
     ClientEnv env <- ask
     modifyIORef env.objects $ Map.insert regionId $ Interface $ WL_region {wlid=regionId}
-    sendMessage compositor.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    liftIO . strReq ("wl_compositor", compositor.wlid, "create_region") $ "regionId: " <> show regionId
+    sendMessage' request compositor.wlid (getOpcode request) $ runPut $ putEvent nodata request
+
   runRequest compositor request@Request_wl_compositor_release = do
-    sendMessage compositor.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    liftIO $ strReq ("wl_compositor", compositor.wlid, "release") ""
+    sendMessage' request compositor.wlid (getOpcode request) $ runPut $ putEvent nodata request
+
 -- }}}
 
 -- WL_shm_pool {{{
@@ -240,17 +241,17 @@ instance Interface' WL_shm_pool Client where
     ClientEnv env <- ask
     let buffer = WL_buffer {wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = enum_wl_shm_format' format'}
     modifyIORef env.objects $ Map.insert bufId $ Interface buffer
-    sendMessage shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    liftIO $ strReq ("wl_shm_pool", shm_pool.wlid, "create_buffer") $ "bufId=" <> show bufId <> " offset=" <> show offset' <> " width=" <> show width' <> " height=" <> show height' <> " stride=" <> show stride' <> " format=" <> show format'
+    sendMessage' request shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
+
   runRequest shm_pool request@Request_wl_shm_pool_destroy = do
     ClientEnv env <- ask
     modifyIORef env.objects $ Map.delete shm_pool.wlid
-    sendMessage shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    liftIO $ strReq ("wl_shm_pool", shm_pool.wlid, "destroy") ""
+    sendMessage' request shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
+
   runRequest shm_pool request@Request_wl_shm_pool_resize{size} = do
     writeIORef shm_pool.size size
-    sendMessage shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    liftIO $ strReq ("wl_shm_pool", shm_pool.wlid, "resize") ""
+    sendMessage' request shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
+
   runEvent _ _ = pure ()
 -- }}}
 
@@ -262,13 +263,13 @@ instance Interface' WL_shm Client where
     ClientEnv env <- ask
     sizeRef <- newIORef size'
     modifyIORef env.objects $ Map.insert poolId $ Interface $ WL_shm_pool {wlid=poolId, fd=fd', size=sizeRef}
-    sendMessageWithFds [fd'] shm.wlid (getOpcode request) $ runPut $ putEvent (AdditionalParserData [fd']) request
-    liftIO $ strReq ("wl_shm", shm.wlid, "create_pool") $ "poolId: " <> show poolId <> " fd: " <> show fd' <> " size: " <> show size'
+    sendMessageWithFds' request [fd'] shm.wlid (getOpcode request) $ runPut $ putEvent (AdditionalParserData [fd']) request
+
   runRequest shm request@Request_wl_shm_release{} = do
     ClientEnv env <- ask
     modifyIORef env.objects $ Map.delete shm.wlid
-    sendMessage shm.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    liftIO $ strReq ("wl_shm", shm.wlid, "release") ""
+    sendMessage' request shm.wlid (getOpcode request) $ runPut $ putEvent nodata request
+
 
   runEvent shm Event_wl_shm_format{format} = modifyIORef shm.formats (fromIntegral format:)
 -- }}}
@@ -366,19 +367,17 @@ instance Interface' WL_surface Client where
   type Request WL_surface = Request_wl_surface
   runRequest _ Request_wl_surface_destroy{} = pure ()
   runRequest surface request@Request_wl_surface_attach{buffer=bufferId, x, y} = do
-    sendMessage surface.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    liftIO $ strReq ("wl_surface", surface.wlid, "wl_surface_attach") $
-           "bufferId: " <> show bufferId <> " x: " <> show x <> " y: " <> show y
+    sendMessage' request surface.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest _ Request_wl_surface_damage{} = pure ()
   runRequest _ Request_wl_surface_frame{} = pure ()
   runRequest _ Request_wl_surface_set_opaque_region{} = pure ()
   runRequest _ Request_wl_surface_set_input_region{} = pure ()
   runRequest surface request@Request_wl_surface_commit{} = do
-    sendMessage surface.wlid (getOpcode request) $ runPut $ putEvent nodata request
+    sendMessage' request surface.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest _ Request_wl_surface_set_buffer_transform{} = pure ()
   runRequest _ Request_wl_surface_set_buffer_scale{} = pure ()
   runRequest surface request@Request_wl_surface_damage_buffer{} = do
-    sendMessage surface.wlid (getOpcode request) $ runPut $ putEvent nodata request
+    sendMessage' request surface.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest _ Request_wl_surface_offset{} = pure ()
   runRequest _ Request_wl_surface_get_release{} = pure ()
   runEvent _ Event_wl_surface_enter{} = pure ()

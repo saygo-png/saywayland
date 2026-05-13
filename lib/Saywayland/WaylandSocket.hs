@@ -25,6 +25,8 @@ import Data.Binary.Put (runPut, putWord16le)
 import Protocol
 import GHC.IORef (IORef(IORef))
 import Data.Data (cast)
+import Debug.Trace (traceIO)
+import System.Console.ANSI (Color(Magenta), ColorIntensity (Vivid))
 
 -- Listeners {{{
 
@@ -97,10 +99,12 @@ handleMessage as oid fds opcode msg = do
     Nothing -> error $ "invalid object reference with id: " <> show oid
 
 dispatchClientMessage :: forall i. Interface' i Client => i -> ObjectID -> [Fd] -> Word16 -> BS.ByteString -> Wayland Client ()
-dispatchClientMessage x _ fds opcode msg = do
+dispatchClientMessage x oid fds opcode msg = do
   case runGetOrFail (getEvent opcode $ AdditionalParserData fds) (toLazy msg) of
     Left (_, _, err)      -> fail err
     Right (_, _, event)   -> do
+      colorize <- liftIO getColorize
+      liftIO . traceIO . colorize Vivid Magenta $ showEvent oid event
       runEvent x event
       ClientEnv env <- ask
       handlers <- liftIO $ readIORef env.eventHandlers

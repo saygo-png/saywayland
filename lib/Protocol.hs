@@ -187,15 +187,40 @@ generateTables isIO formatter path = do
   pure $ concatMap (`generateInterfaceTable` formatter) protocols 
       <> concatMap generateVersionTable protocols
 
+
+emptyString = ""
 mkEvents :: String -> String -> [Element] -> [Dec]
 mkEvents interfaceName prefix events = [
     DataD [] (mkName prefix') [] Nothing constructors []
+--  , InstanceD Nothing [] (AppT (ConT ''ShowEvent) $ ConT $ mkName prefix') [FunD 'showEvent $ bool (fmap mkShow events) [Clause [VarP $ mkName "oid", VarP $ mkName "_"] (NormalB $ VarE 'emptyString) []] (null events)]
   ]
   where
     prefix' = prefix <> "_" <> interfaceName
     buildBang x = (mkName . fromJust $ findAttr (qname "name") x, Bang NoSourceUnpackedness NoSourceStrictness, argType x)
     buildRecord x = RecC (mkName $ prefix' <> "_" <> fromJust (findAttr (qname "name") x)) $ buildBang <$> findChildren (qname "arg") x
     constructors = fmap buildRecord events
+
+mkShow :: String -> String -> String -> [(Word16, Element)] -> Q [Dec]
+mkShow interfaceName prefix prefix2 events = mapM (pure . mkShowC) (fmap snd events) <&> \m -> bool [
+    SigD (mkName prefix) (AppT (AppT ArrowT $ ConT ''ObjectID) $ AppT (AppT ArrowT $ ConT $ mkName $ prefix2 <> interfaceName) $ ConT ''String)
+  , FunD (mkName prefix) m
+  ] [] (null m)
+  where
+    arrow = case prefix2 of
+      "Request_" -> "        -> "
+      "Event_"   -> "        <- "
+      _ -> "        ?? "
+    mkShowC :: Element -> Clause
+    mkShowC e = Clause [VarP $ mkName "oid", RecP (mkName $ prefix2 <> interfaceName <> "_" <> eventName) $ fmap (\x -> (x, VarP x)) args] (NormalB $ chainShow (reverse args)) []
+      where
+        single x = AppE (AppE (VarE '(<>)) $ LitE $ StringL $ " " <> nameBase x <> ": ") $ AppE (VarE 'show) $ VarE x
+        chainShow [] = VarE $ mkName "emptyString"
+        chainShow [x] = AppE (AppE (VarE '(<>)) $ 
+            AppE (AppE (VarE '(<>)) $ LitE $ StringL $ mconcat [arrow, interfaceName , "@"])
+                  $ AppE (AppE (VarE '(<>)) (AppE (VarE 'show) $ VarE (mkName "oid"))) (LitE $ StringL $ mconcat [".", eventName, ": "])) $ single x
+        chainShow (x:xs) = InfixE (Just $ chainShow xs) (VarE '(<>)) (Just $ single x)
+        args = mkName . fromJust . findAttr (qname "name") <$> findChildren (qname "arg") e
+        eventName = fromJust $ findAttr (qname "name") e
 
 mkOpcodeGetter :: String -> String -> String -> [(Word16, Element)] -> Q [Dec]
 mkOpcodeGetter interfaceName prefix prefix2 events = mapM mkClause events <&> \m -> bool [
@@ -251,7 +276,8 @@ mkWLEvent interfaceName prefix2 events = do
   put' <- mkPut interfaceName "putEvent" prefix2 events
   get' <- mkParser interfaceName "getEvent" prefix2 events
   opc' <- mkOpcodeGetter interfaceName "getOpcode" prefix2 events
-  pure [InstanceD Nothing [] (AppT (ConT ''WaylandEvent) $ ConT . mkName $ prefix2 <> interfaceName) $ put' <> get' <> opc']
+  show' <- mkShow interfaceName "showEvent" prefix2 events
+  pure [InstanceD Nothing [] (AppT (ConT ''WaylandEvent) $ ConT . mkName $ prefix2 <> interfaceName) $ put' <> get' <> opc' <> show']
 
 -- | Create all definitions for a single interface - version, the class, parsers, builders, enums, opcodes,
 loadInterface :: Element -> Q [Dec]
