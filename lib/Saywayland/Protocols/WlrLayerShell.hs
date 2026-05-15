@@ -1,28 +1,35 @@
-{-# LANGUAGE TemplateHaskell, TypeFamilies, FunctionalDependencies, UndecidableInstances #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
+
 module Saywayland.Protocols.WlrLayerShell where
-import Relude
-import Protocol
-import Saywayland.Types
 
 import Control.Lens
 import Data.Binary.Put (runPut)
-
-import Data.Map qualified as Map
 import Data.Char (toUpper)
+import Data.Map qualified as Map
+import Protocol
+import Relude
+import Saywayland.Types
 
 $(loadProtocolFile False "protocols/wlr-layer-shell-unstable-v1.xml")
 
 data Zwlr_layer_shell_v1 = Zwlr_layer_shell_v1 {wlid :: Word32}
+
 makeFieldsId ''Zwlr_layer_shell_v1
+
 data Zwlr_layer_surface_v1 = Zwlr_layer_surface_v1 {wlid :: Word32}
+
 makeFieldsId ''Zwlr_layer_surface_v1
 
 instance DefaultIO Zwlr_layer_shell_v1 where
   defM = pure $ Zwlr_layer_shell_v1 0
+
 instance DefaultIO Zwlr_layer_surface_v1 where
   defM = pure $ Zwlr_layer_surface_v1 0
 
-$(generateTables False (\(x1:xs) -> toUpper x1:xs) "protocols/wlr-layer-shell-unstable-v1.xml")
+$(generateTables False (\(x1 : xs) -> toUpper x1 : xs) "protocols/wlr-layer-shell-unstable-v1.xml")
 
 -- zwlr_layer_shell_v1 {{{
 instance Interface' Zwlr_layer_shell_v1 Client where
@@ -32,8 +39,9 @@ instance Interface' Zwlr_layer_shell_v1 Client where
   runRequest shell request@Request_zwlr_layer_shell_v1_get_layer_surface{id = layerSurfaceId, surface = surfaceId, output = outputId, layer, namespace} = do
     ClientEnv env <- ask
     sendMessage' request shell.wlid (getOpcode request) $ runPut $ putEvent nodata request
-    modifyIORef env.objects $ Map.insert layerSurfaceId $ Interface Zwlr_layer_surface_v1 {wlid=layerSurfaceId}
+    modifyIORef env.objects $ Map.insert layerSurfaceId $ Interface Zwlr_layer_surface_v1{wlid = layerSurfaceId}
   runRequest shell Request_zwlr_layer_shell_v1_destroy = undefined
+
 -- }}}
 -- zwlr_layer_surface_v1 {{{
 instance Interface' Zwlr_layer_surface_v1 Client where
@@ -54,5 +62,6 @@ instance Interface' Zwlr_layer_surface_v1 Client where
   runRequest ls Request_zwlr_layer_surface_v1_set_keyboard_interactivity{} = undefined
   runRequest ls Request_zwlr_layer_surface_v1_set_layer{} = undefined
   runRequest ls Request_zwlr_layer_surface_v1_set_margin{} = undefined
+
 -- }}}
 -- vim: foldmethod=marker

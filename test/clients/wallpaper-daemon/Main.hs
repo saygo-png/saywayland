@@ -1,33 +1,26 @@
 {- HLINT ignore "Use camelCase" -}
-{-# LANGUAGE TemplateHaskell, TypeFamilies #-}
+-- {-# LANGUAGE TemplateHaskell, TypeFamilies #-}
 module Main (main) where
-
 
 import Config
 import Control.Concurrent (forkIO)
 import Control.Exception
+import Data.Bimap qualified as BM
 import Data.ByteString.Lazy hiding (singleton)
 import Data.Map qualified as Map
-import Data.Bimap qualified as BM
-import Data.List (singleton)
+import Data.Maybe (fromJust)
 import Network.Socket hiding (openSocket)
 import Relude hiding (ByteString, get, isPrefixOf, put)
-import Saywayland
+import Saywayland.Protocols.Wayland
+import Saywayland.Protocols.WlrLayerShell
 import Saywayland.Types
+import Saywayland.WaylandSocket
 import System.Posix (ownerReadMode, ownerWriteMode, setFdSize, unionFileModes)
 import System.Posix.IO
 import System.Posix.SharedMem
 
-import Saywayland.Protocols.Wayland
-import Saywayland.Protocols.WlrLayerShell
-import Saywayland.WaylandSocket
-import Protocol
-import Data.Maybe (fromJust)
-import Data.List (lookup)
-import Control.Concurrent (threadDelay)
-
-
 interfaceTable = waylandInterfaceTable <> wlr_layer_shell_unstable_v1InterfaceTable
+
 versionTable = waylandVersionTable <> wlr_layer_shell_unstable_v1VersionTable
 
 main :: IO ()
@@ -75,7 +68,6 @@ program = do
   zwlrLayerShellV1Id <- fromJust <$> bindToInterface registry "zwlr_layer_shell_v1"
   zwlrLayerShellV1 <- fromJust <$> getInterface' (Proxy @Zwlr_layer_shell_v1) zwlrLayerShellV1Id
 
-
   modifyIORef env.eventHandlers $ (:) $ EventHandler $ \case
     (Event_zwlr_layer_surface_v1_configure serial' _width _height) -> do
       atomically $ putTMVar serial serial'
@@ -86,11 +78,11 @@ program = do
   surface' <- fromJust <$> getInterface wlSurfaceId
   let surface = fromJust $ proxyInterface (Proxy @WL_surface) surface'
   layerSurfaceId <- newObjectId
-  runRequest zwlrLayerShellV1 $ Request_zwlr_layer_shell_v1_get_layer_surface {id=layerSurfaceId, surface=wlSurfaceId,output=0,layer = enum_zwlr_layer_shell_v1_layer Enum_zwlr_layer_shell_v1_layerbackground, namespace = "wallpaper"}
+  runRequest zwlrLayerShellV1 $ Request_zwlr_layer_shell_v1_get_layer_surface{id = layerSurfaceId, surface = wlSurfaceId, output = 0, layer = enum_zwlr_layer_shell_v1_layer Enum_zwlr_layer_shell_v1_layerbackground, namespace = "wallpaper"}
   zwlrLayerSurfaceV1 <- fromJust <$> getInterface' (Proxy @Zwlr_layer_surface_v1) layerSurfaceId
-  runRequest zwlrLayerSurfaceV1 $ Request_zwlr_layer_surface_v1_set_size {width=fromIntegral bufferWidth, height=fromIntegral bufferHeight}
-  runRequest zwlrLayerSurfaceV1 $ Request_zwlr_layer_surface_v1_set_exclusive_zone {zone = -1}
-  
+  runRequest zwlrLayerSurfaceV1 $ Request_zwlr_layer_surface_v1_set_size{width = fromIntegral bufferWidth, height = fromIntegral bufferHeight}
+  runRequest zwlrLayerSurfaceV1 $ Request_zwlr_layer_surface_v1_set_exclusive_zone{zone = -1}
+
   runRequest surface Request_wl_surface_commit
   atomically (takeTMVar serial) >>= runRequest zwlrLayerSurfaceV1 . Request_zwlr_layer_surface_v1_ack_configure
 
@@ -102,15 +94,15 @@ program = do
           let poolSize = fromIntegral frameSize
           liftIO . setFdSize fileDescriptor $ fromIntegral poolSize
           wlShmPoolId <- newObjectId
-          runRequest wl_shm $ Request_wl_shm_create_pool {id=wlShmPoolId, fd=fileDescriptor,size=poolSize}
+          runRequest wl_shm $ Request_wl_shm_create_pool{id = wlShmPoolId, fd = fileDescriptor, size = poolSize}
           wl_shm_pool <- fromJust <$> getInterface' (Proxy @WL_shm_pool) wlShmPoolId
           wlBufferId <- newObjectId
-          runRequest wl_shm_pool $ Request_wl_shm_pool_create_buffer {id=wlBufferId, offset=0, width=bufferWidth, height=bufferHeight, stride=bufferWidth*colorChannels , format=enum_wl_shm_format colorFormat}
+          runRequest wl_shm_pool $ Request_wl_shm_pool_create_buffer{id = wlBufferId, offset = 0, width = bufferWidth, height = bufferHeight, stride = bufferWidth * colorChannels, format = enum_wl_shm_format colorFormat}
 
           fileHandle <- liftIO $ fdToHandle fileDescriptor
 
           liftIO $ hPut fileHandle image
-          runRequest surface Request_wl_surface_attach {buffer=wlBufferId, x=0, y=0}
+          runRequest surface Request_wl_surface_attach{buffer = wlBufferId, x = 0, y = 0}
           runRequest surface Request_wl_surface_commit
 
           -- Wait for exit

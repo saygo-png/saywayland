@@ -1,30 +1,31 @@
-{-# LANGUAGE TypeFamilies, TemplateHaskell, FunctionalDependencies #-}
+{-# LANGUAGE FunctionalDependencies #-}
+{-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE TypeFamilies #-}
+
 module Saywayland.Types where
 
-import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
+import Control.Lens (makeFieldsId)
+import Control.Monad ((<=<))
 import Data.Bimap qualified as BM
 import Data.Binary
 import Data.Binary.Get hiding (remaining)
 import Data.Binary.Put
 import Data.Bits
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
 import Data.ByteString.Lazy.Internal qualified as BSL
+import Data.Data (cast)
 import Data.Map qualified as Map
+import Debug.Trace (traceIO)
+import GHC.Records (HasField)
 import GHC.Show qualified as GHC
 import Network.Socket (Socket)
+import Network.Socket.ByteString (sendManyWithFds)
+import Network.Socket.ByteString.Lazy (sendAll)
 import Relude hiding (ByteString, get, put)
 import SaywaylandTH
+import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
 import System.Posix (Fd)
-import Control.Monad ((<=<))
-
-import Data.ByteString qualified as BS
-import Network.Socket.ByteString.Lazy (sendAll)
-import Network.Socket.ByteString (sendManyWithFds)
-import Data.Data (cast)
-import GHC.Records (HasField)
-import Control.Lens (makeFieldsId)
-import Debug.Trace (traceIO)
-
 
 -- Constants {{{
 
@@ -44,10 +45,12 @@ wlDisplayID = 1
 
 -- Types {{{
 type ObjectID = Word32
+
 type NewID = (BS.ByteString, Word32, ObjectID)
 
 -- | Created to obtain HasWlid within Types module. There are way better ways to achieve this.
 data Tmp = Tmp {wlid :: ObjectID}
+
 makeFieldsId ''Tmp
 
 -- | Round a byte length up to the nearest 4-byte boundary.
@@ -71,51 +74,53 @@ data WaylandEnv (p :: Perspective) where
   ServerEnv :: ServerEnvironment -> WaylandEnv 'Server
 
 data ServerEnvironment = ServerEnvironment
-  {
-  -- | global server socket
-    socket  :: Socket
-  -- | currently connected clients
+  { socket :: Socket
+  -- ^ global server socket
   , clients :: IORef (Map Int (ClientEnvironment Server))
-  -- | Id of the currently attached client. Nothing if the env is global.
-  , attached:: Maybe Int
+  -- ^ currently connected clients
+  , attached :: Maybe Int
+  -- ^ Id of the currently attached client. Nothing if the env is global.
   }
 
 data ClientEnvironment (p :: Perspective) = ClientEnvironment
-  {
-    socket  :: Socket
+  { socket :: Socket
   , counter :: IORef Word32
   , objects :: IORef (Map Word32 (Interface p))
-  , globals :: IORef (BM.Bimap {-string name-}BS.ByteString {-global name-}Word32)
+  , globals :: IORef (BM.Bimap {-string name-} BS.ByteString {-global name-} Word32)
   , interfaceTable :: IORef (Map String (IO (Interface p)))
-  , versionTable   :: IORef (Map String Word32)
+  , versionTable :: IORef (Map String Word32)
   , eventHandlers :: IORef [EventHandler]
   }
 
-class ( WaylandEvent (Event a)
-      , WaylandEvent (Request a)
-      , HasWlid a ObjectID
-      , Typeable a) => Interface' a (p :: Perspective) where
+class
+  ( WaylandEvent (Event a)
+  , WaylandEvent (Request a)
+  , HasWlid a ObjectID
+  , Typeable a
+  ) =>
+  Interface' a (p :: Perspective)
+  where
   type Event a
   type Request a
-  runEvent   :: a -> Event a -> Wayland p ()
+  runEvent :: a -> Event a -> Wayland p ()
   runRequest :: a -> Request a -> Wayland p ()
 
 data Interface (p :: Perspective) where
   Interface :: (Interface' i p, Typeable i) => i -> Interface p
 
 -- | Cast provided interface into proxied type.
-proxyInterface :: forall i p. Typeable i => Proxy i -> Interface p -> Maybe i
+proxyInterface :: forall i p. (Typeable i) => Proxy i -> Interface p -> Maybe i
 proxyInterface _ (Interface i) = cast i
 
-class Typeable e => WaylandEvent e where
+class (Typeable e) => WaylandEvent e where
   getEvent :: Word16 -> AdditionalParserData -> Get e
   putEvent :: AdditionalParserData -> e -> Put
   getOpcode :: e -> Word16
   showEvent :: ObjectID -> e -> String
 
 -- | Additional data passed to the TemplateHaskell-generated `getEvent`.
-data AdditionalParserData = AdditionalParserData {
-    fds :: [Fd]
+data AdditionalParserData = AdditionalParserData
+  { fds :: [Fd]
   }
 
 -- | predefined empty AdditionalParserData
@@ -124,22 +129,25 @@ nodata = AdditionalParserData []
 
 -- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.
 type Wayland p = ReaderT (WaylandEnv p) IO
+
 -- }}}
 
 -- Utils {{{
+
 -- | function that increases the counter by 1 and returns it's new value
 newObjectId :: Wayland p Word32
 newObjectId = do
-    ClientEnv env <- ask
-    liftIO $ modifyIORef env.counter (+ 1)
-    liftIO $ readIORef env.counter
+  ClientEnv env <- ask
+  liftIO $ modifyIORef env.counter (+ 1)
+  liftIO $ readIORef env.counter
 
 -- | function that inserts the given interface to the objects map with provided id as key.
-newObject :: Typeable i => Interface' i 'Client => Word32 -> i -> Wayland p i
+newObject :: (Typeable i) => (Interface' i 'Client) => Word32 -> i -> Wayland p i
 newObject intId int = do
-    ClientEnv env <- ask
-    liftIO $ modifyIORef env.objects (Map.insert intId $ Interface int)
-    pure int
+  ClientEnv env <- ask
+  liftIO $ modifyIORef env.objects (Map.insert intId $ Interface int)
+  pure int
+
 {- | Convenience function for sending a Wayland message.
 See 'mkMessage'.
 -}
@@ -147,6 +155,7 @@ sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
 sendMessageWithFds fds objectID opcode messageBody = do
   socket <- asks (\(ClientEnv env) -> env.socket)
   liftIO $ sendManyWithFds socket [BS.toStrict $ mkMessage objectID opcode messageBody] fds
+
 sendMessage :: Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
 sendMessage objectID opcode messageBody = do
   wlSocket <- asks (\(ClientEnv env) -> env.socket)
@@ -161,6 +170,7 @@ sendMessage' e o op body = do
   colorize <- liftIO getColorize
   liftIO (traceIO $ colorize Vivid Magenta $ showEvent o e)
   sendMessage o op body
+
 -- | sendMessageWithFds, but with sendMessage' aspect.
 sendMessageWithFds' :: (WaylandEvent e) => e -> [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
 sendMessageWithFds' e fd o op body = do
@@ -188,7 +198,6 @@ getColorize = do
       then \ci c t -> fromString (setSGRCode [SetColor Foreground ci c]) <> t <> fromString (setSGRCode [Reset])
       else const $ const id
 
-
 -- | helper function for getting an object from a global
 interfaceFromName :: Word32 -> Wayland p (Maybe BS.ByteString)
 interfaceFromName n = do
@@ -207,6 +216,7 @@ getInterface' :: forall i p. (Typeable i, Interface' i p) => Proxy i -> Word32 -
 getInterface' p objectID = do
   ClientEnv env <- ask
   (proxyInterface p <=< Map.lookup objectID) <$> readIORef env.objects
+
 -- }}}
 
 getServerClientEnv :: Wayland Server (Maybe (ClientEnvironment Server))

@@ -1,11 +1,11 @@
 {-# LANGUAGE TemplateHaskell #-}
+
 module Main (main) where
 
 import Language.Haskell.TH
-import Prelude
 import Protocol
-
 import Saywayland.Interfaces
+import Prelude
 
 main :: IO ()
 main = do

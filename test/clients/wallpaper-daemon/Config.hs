@@ -4,19 +4,19 @@ import Data.ByteString.Lazy
 import Relude hiding (ByteString)
 import Saywayland.Protocols.Wayland (Enum_wl_shm_format (Enum_wl_shm_formatargb8888))
 
-bufferWidth :: Int--WlInt
+bufferWidth :: Int -- WlInt
 bufferWidth = 1920
 
-bufferHeight :: Int--WlInt
+bufferHeight :: Int -- WlInt
 bufferHeight = 1080
 
 poolName :: String
 poolName = "saywallpaper-shared-pool"
 
-colorFormat :: Enum_wl_shm_format--WlColorFormat
+colorFormat :: Enum_wl_shm_format -- WlColorFormat
 colorFormat = Enum_wl_shm_formatargb8888
 
-colorChannels :: Int--WlInt
+colorChannels :: Int -- WlInt
 colorChannels = 4
 
 -- | Rainbow image :D

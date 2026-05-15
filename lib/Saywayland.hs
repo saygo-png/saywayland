@@ -65,6 +65,7 @@ formatEvent = \case
 -- Event loop {{{
 
 -- | Core event loop. It reads the socket and processes the data using 'processBuffer'
+
 {-
 eventLoop :: Wayland ()
 eventLoop = do
@@ -165,7 +166,7 @@ bindToInterface registryID globalsRef targetInterface waylandInterface =
 -}
 
 {- | Convert a WlString to text while stripping null terminators.
-| Simply using 'show' does not strip null terminators.
+\| Simply using 'show' does not strip null terminators.
 -}
 wlToText :: WlString -> Text
 wlToText = decodeUtf8 . BSL.toStrict . BSL.takeWhile (/= 0) . (.unWlString)

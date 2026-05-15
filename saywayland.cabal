@@ -1,14 +1,14 @@
-cabal-version: 2.4
-name:          saywayland
-version:       0.0.0
-license:       GPL-3.0-or-later
-license-file:  LICENSE.txt
-author:        saygo-png
-maintainer:    saygo-png <saygo.mail@proton.me>
-category:      Graphics
-synopsis:      Generic, simple Wayland library without C bindings
-homepage:      https://github.com/saygo-png/saywayland
-bug-reports:   https://github.com/saygo-png/saywayland/issues
+cabal-version:      2.4
+name:               saywayland
+version:            0.0.0
+license:            GPL-3.0-or-later
+license-file:       LICENSE.txt
+author:             saygo-png
+maintainer:         saygo-png <saygo.mail@proton.me>
+category:           Graphics
+synopsis:           Generic, simple Wayland library without C bindings
+homepage:           https://github.com/saygo-png/saywayland
+bug-reports:        https://github.com/saygo-png/saywayland/issues
 description:
   Saywayland is a WIP, simple Wayland library that doesn't use C bindings.
   Neither does it provide abstractions, it's a fairly raw and incomplete implementation of some Wayland protocols.
@@ -42,26 +42,27 @@ library
   import:          common-options
   build-depends:
     , ansi-terminal
+    , bimap
     , binary
     , bytestring
     , containers
     , directory
     , filepath
+    , lens
     , network
     , template-haskell
-    , xml
     , unix
-    , lens
-    , bimap
+    , xml
+
   hs-source-dirs:  lib
   exposed-modules:
+    Protocol
     Saywayland
-    Saywayland.Types
-    Saywayland.WaylandSocket
     Saywayland.Protocols.Wayland
     Saywayland.Protocols.WlrLayerShell
+    Saywayland.Types
+    Saywayland.WaylandSocket
     SaywaylandTH
-    Protocol
 
 -- Test of a simple wallpaper daemon
 test-suite client-wallpaper-daemon
@@ -73,13 +74,14 @@ test-suite client-wallpaper-daemon
   other-modules:    Config
   build-depends:
     , base
+    , bimap
     , bytestring
+    , containers
     , network
     , relude
     , saywayland
     , unix
-    , containers
-    , bimap
+
 test-suite template-haskell-protocol
   import:           common-options
   default-language: GHC2024
@@ -92,6 +94,6 @@ test-suite template-haskell-protocol
     , network
     , relude
     , saywayland
-    , unix
     , template-haskell
+    , unix
     , xml

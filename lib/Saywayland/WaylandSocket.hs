@@ -1,32 +1,31 @@
 module Saywayland.WaylandSocket (module Saywayland.WaylandSocket) where
 
+import Control.Concurrent (forkIO)
+import Data.Bimap qualified as BM
+import Data.Binary.Get
+import Data.Binary.Put (putWord16le, runPut)
+import Data.Bool (bool)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
-import Control.Concurrent (forkIO)
-import Data.Bool (bool)
+import Data.Data (cast)
 import Data.Map qualified as Map
-import Data.Bimap qualified as BM
 import Data.String (IsString (fromString))
+import Debug.Trace (traceIO)
+import Foreign (Storable (peek, sizeOf), castPtr)
+import Foreign.C
+import GHC.IO (unsafePerformIO)
+import GHC.IORef (IORef (IORef))
 import Network.Socket
-import Relude (MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), newIORef, Word16, Word32, readIORef, LazyStrict (toLazy), traceShow, forM_, for_)
+import Network.Socket.ByteString (recvMsg)
+import Protocol
+import Relude (LazyStrict (toLazy), MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), Word16, Word32, forM_, for_, newIORef, readIORef, traceShow)
 import Saywayland.Types
+import System.Console.ANSI (Color (Magenta), ColorIntensity (Vivid))
 import System.Directory (doesFileExist)
 import System.Environment.Blank (getEnv)
 import System.FilePath
-import Prelude
-
-import Network.Socket.ByteString (recvMsg)
-import Foreign.C
 import System.Posix (Fd (Fd))
-import Foreign (Storable(sizeOf, peek), castPtr)
-import GHC.IO (unsafePerformIO)
-import Data.Binary.Get
-import Data.Binary.Put (runPut, putWord16le)
-import Protocol
-import GHC.IORef (IORef(IORef))
-import Data.Data (cast)
-import Debug.Trace (traceIO)
-import System.Console.ANSI (Color(Magenta), ColorIntensity (Vivid))
+import Prelude
 
 -- Listeners {{{
 
@@ -39,11 +38,9 @@ listenForClients sock = do
   objectsref <- liftIO $ newIORef Map.empty
   globalsref <- liftIO $ newIORef BM.empty
   handlers <- newIORef []
-  let clientenv = ClientEnv $ ClientEnvironment{socket = sock, {-globals = globalsref,-} counter = serial, objects = objectsref, eventHandlers = handlers, globals = globalsref} :: WaylandEnv Client
+  let clientenv = ClientEnv $ ClientEnvironment{socket = sock {-globals = globalsref,-}, counter = serial, objects = objectsref, eventHandlers = handlers, globals = globalsref} :: WaylandEnv Client
   _ <- liftIO $ forkIO $ runReaderT (clientLoop Server sock) clientenv
   liftIO $ runReaderT (listenForClients sock) env
-
-
 
 getHeader :: Get (Word32, Word16, Word16)
 getHeader = (,,) <$> getWord32le <*> getWord16le <*> getWord16le
@@ -57,9 +54,10 @@ decodeFds bs =
       | BS.length b < sizeOf (0 :: CInt) = reverse acc
       | otherwise =
           let (x, rest) = BS.splitAt (sizeOf (0 :: CInt)) b
-              v = unsafePerformIO $
-                    BS.useAsCString x (peek . castPtr)
-          in go rest (v:acc)
+              v =
+                unsafePerformIO $
+                  BS.useAsCString x (peek . castPtr)
+           in go rest (v : acc)
 
 -- | handle communication between a server and a client in provided socket, works both on the server and the client.
 clientLoop :: Perspective -> Socket -> Wayland Client ()
@@ -70,24 +68,27 @@ clientLoop' fds bytes' as sock = do
   (_, bytes'', cmsgs, flags) <- liftIO $ recvMsg sock 8 4096 mempty
   let newFds = concatMap (decodeFds . cmsgData) $ filter (\x -> cmsgId x == CmsgIdFds) cmsgs
   let bytes = bytes' <> bytes''
-  bool (case extractMessage bytes of
-    Just (oid, opcode, x,y) -> handleMessage as oid (fds ++ newFds) opcode x >> clientLoop' [{-hopefully fd passing won't break horrifyingly-}] y as sock
-    Nothing -> undefined
+  bool
+    ( case extractMessage bytes of
+        Just (oid, opcode, x, y) -> handleMessage as oid (fds ++ newFds) opcode x >> clientLoop' [] {-hopefully fd passing won't break horrifyingly-} y as sock
+        Nothing -> undefined
     )
     (clientLoop' (fds ++ newFds) bytes as sock)
     (isPartial bytes)
 
 isPartial :: BS.ByteString -> Bool
 isPartial s = case runGetOrFail getHeader (BL.fromStrict s) of
-              Left (_,_,_) -> True
-              Right (rest,_,(_,_,size)) -> fromIntegral (size - headerSize) > BL.length rest
-extractMessage :: BS.ByteString -> Maybe (Word32,Word16, BS.ByteString, BS.ByteString)
+  Left (_, _, _) -> True
+  Right (rest, _, (_, _, size)) -> fromIntegral (size - headerSize) > BL.length rest
+
+extractMessage :: BS.ByteString -> Maybe (Word32, Word16, BS.ByteString, BS.ByteString)
 extractMessage s = case runGetOrFail getHeader (BL.fromStrict s) of
-              Left (_,_,_) -> Nothing
-              Right (rest',_,(oid,opcode,size)) -> Just (oid, opcode, BS.take payload rest, BS.drop payload rest)
-                where
-                  payload = fromIntegral $ size - headerSize
-                  rest = BS.toStrict rest'
+  Left (_, _, _) -> Nothing
+  Right (rest', _, (oid, opcode, size)) -> Just (oid, opcode, BS.take payload rest, BS.drop payload rest)
+    where
+      payload = fromIntegral $ size - headerSize
+      rest = BS.toStrict rest'
+
 handleMessage :: Perspective -> ObjectID -> [Fd] -> Word16 -> BS.ByteString -> Wayland Client ()
 handleMessage as oid fds opcode msg = do
   ClientEnv env <- ask
@@ -98,11 +99,11 @@ handleMessage as oid fds opcode msg = do
       Server -> undefined
     Nothing -> error $ "invalid object reference with id: " <> show oid
 
-dispatchClientMessage :: forall i. Interface' i Client => i -> ObjectID -> [Fd] -> Word16 -> BS.ByteString -> Wayland Client ()
+dispatchClientMessage :: forall i. (Interface' i Client) => i -> ObjectID -> [Fd] -> Word16 -> BS.ByteString -> Wayland Client ()
 dispatchClientMessage x oid fds opcode msg = do
   case runGetOrFail (getEvent opcode $ AdditionalParserData fds) (toLazy msg) of
-    Left (_, _, err)      -> fail err
-    Right (_, _, event)   -> do
+    Left (_, _, err) -> fail err
+    Right (_, _, event) -> do
       colorize <- liftIO getColorize
       liftIO . traceIO . colorize Vivid Magenta $ showEvent oid event
       runEvent x event
@@ -110,6 +111,7 @@ dispatchClientMessage x oid fds opcode msg = do
       handlers <- liftIO $ readIORef env.eventHandlers
       forM_ handlers $ \(EventHandler f) ->
         for_ (cast event) f
+
 -- }}}
 
 -- Socket Finding Utilities {{{
