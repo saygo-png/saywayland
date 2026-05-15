@@ -581,7 +581,7 @@ bindToInterface registry intName = go 1
       when
         (count >= 10)
         (putTextLn ("ERROR: the wayland global " <> show intName <> " not found") >> exitFailure) -- maybe return Nothing here?
-      putTextLn $ mconcat ["Trying to bind to", show intName, "... (", show count, ")"]
+      putTextLn $ mconcat ["Trying to bind to ", show intName, "... (", show count, ")"]
       ClientEnv env <- ask
       glob <- BM.lookup intName <$> readIORef env.globals
       case glob of
