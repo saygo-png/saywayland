@@ -1,9 +1,6 @@
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TemplateHaskell #-}
-{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TemplateHaskellQuotes #-}
 
-module Protocol where
+module Protocol (module Protocol) where
 
 -- this module's purpose is to define all requests and events that exist and should be implemented. Implementing them is handled in `Protocols/`
 
@@ -13,13 +10,11 @@ import Data.Binary.Get
 import Data.Binary.Put (putByteString, putInt32le, putWord32le)
 import Data.Bool (bool)
 import Data.ByteString qualified as BS
-import Data.Char (toLower, toUpper)
 import Data.Functor
 import Data.Maybe (fromJust)
-import Data.Text qualified as T
-import Data.Word
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
+import Relude qualified
 import Saywayland.Types
 import System.Directory (listDirectory)
 import System.FilePath (takeExtension, (</>))
@@ -82,11 +77,13 @@ getFixed24_8 = getInt32le <&> (/ 256.0) . fromIntegral
 
 -- | Put a Wire-encoded Fixed
 putFixed24_8 :: Double -> Put
-putFixed24_8 d = putInt32le $ fromIntegral $ round $ d * 256
+putFixed24_8 d = putInt32le $ fromIntegral @Integer $ round $ d * 256
 
--- | Get an Fd from previously obtained Ancillary data
+-- | Get an Fd from previously obtained ancillary data
 getFd :: AdditionalParserData -> Get Fd
-getFd dat = pure $ head dat.fds
+getFd dat = case Relude.nonEmpty dat.fds of
+  Nothing -> error "No file descriptor found in ancillary data!"
+  Just fd -> pure $ Relude.head fd
 
 -- | return a TH getter expression for a given Type
 getForType :: Type -> Q Exp
@@ -202,13 +199,8 @@ generateTables isIO formatter path = do
     concatMap (`generateInterfaceTable` formatter) protocols
       <> concatMap generateVersionTable protocols
 
-emptyString = ""
-
 mkEvents :: String -> String -> [Element] -> [Dec]
-mkEvents interfaceName prefix events =
-  [ DataD [] (mkName prefix') [] Nothing constructors []
-  --  , InstanceD Nothing [] (AppT (ConT ''ShowEvent) $ ConT $ mkName prefix') [FunD 'showEvent $ bool (fmap mkShow events) [Clause [VarP $ mkName "oid", VarP $ mkName "_"] (NormalB $ VarE 'emptyString) []] (null events)]
-  ]
+mkEvents interfaceName prefix events = [DataD [] (mkName prefix') [] Nothing constructors []]
   where
     prefix' = prefix <> "_" <> interfaceName
     buildBang x = (mkName . fromJust $ findAttr (qname "name") x, Bang NoSourceUnpackedness NoSourceStrictness, argType x)
@@ -233,7 +225,7 @@ mkShow interfaceName prefix prefix2 events =
     mkShowC e = Clause [VarP $ mkName "oid", RecP (mkName $ prefix2 <> interfaceName <> "_" <> eventName) $ fmap (\x -> (x, VarP x)) args] (NormalB $ chainShow (reverse args)) []
       where
         single x = AppE (AppE (VarE '(<>)) $ LitE $ StringL $ " " <> nameBase x <> ": ") $ AppE (VarE 'show) $ VarE x
-        chainShow [] = VarE $ mkName "emptyString"
+        chainShow [] = LitE $ StringL ""
         chainShow [x] =
           AppE
             ( AppE (VarE '(<>)) $
@@ -274,7 +266,7 @@ mkPut interfaceName prefix prefix2 events =
     nestPutters [x] = x
     nestPutters (x : xs) = InfixE (Just $ nestPutters xs) (VarE '(>>)) (Just x)
     mkClause :: (Word16, Element) -> Q Clause
-    mkClause (opcode, element) =
+    mkClause (_opcode, element) =
       mapM (\(a, b) -> putForType b <&> (`AppE` (GetFieldE (VarE $ mkName "event") $ fromJust $ findAttr (qname "name") a)) . (`AppE` VarE adata)) (zip args argTypes)
         <&> \x ->
           ( Clause
