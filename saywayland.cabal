@@ -16,18 +16,14 @@ description:
 extra-source-files: protocols/*.xml
 
 common common-options
-  build-depends:
-    , base    >=4.7 && <5
-    , relude
-
+  build-depends:      base >=4.7 && <5
   default-language:   GHC2024
   ghc-options:
     -Weverything -Wno-all-missed-specialisations
     -Wno-missed-specialisations -Wno-missing-exported-signatures
     -Wno-missing-import-lists -Wno-missing-kind-signatures
     -Wno-missing-local-signatures -Wno-missing-safe-haskell-mode
-    -Wno-safe -Wno-unsafe -Wno-unticked-promoted-constructors -rtsopts
-    -threaded -with-rtsopts=-N
+    -Wno-safe -Wno-unsafe -Wno-unticked-promoted-constructors -threaded
 
   default-extensions:
     DuplicateRecordFields
@@ -37,6 +33,9 @@ common common-options
     OverloadedRecordDot
     OverloadedStrings
     PartialTypeSignatures
+
+common executable-options
+  ghc-options: -rtsopts -with-rtsopts=-N
 
 library
   import:          common-options
@@ -50,6 +49,7 @@ library
     , filepath
     , lens
     , network
+    , relude
     , template-haskell
     , unix
     , xml
@@ -66,34 +66,26 @@ library
 
 -- Test of a simple wallpaper daemon
 test-suite client-wallpaper-daemon
-  import:           common-options
-  default-language: GHC2024
-  type:             exitcode-stdio-1.0
-  hs-source-dirs:   test/clients/wallpaper-daemon
-  main-is:          Main.hs
-  other-modules:    Config
+  import:         common-options, executable-options
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test/clients/wallpaper-daemon
+  main-is:        Main.hs
+  other-modules:  Config
   build-depends:
+    , relude
+    , unix
+    , network
     , base
     , bimap
-    , bytestring
     , containers
-    , network
-    , relude
     , saywayland
-    , unix
 
 test-suite template-haskell-protocol
-  import:           common-options
-  default-language: GHC2024
-  type:             exitcode-stdio-1.0
-  hs-source-dirs:   test/both/protocol
-  main-is:          Main.hs
+  import:         common-options, executable-options
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test/both/protocol
+  main-is:        Main.hs
   build-depends:
     , base
-    , bytestring
-    , network
-    , relude
     , saywayland
     , template-haskell
-    , unix
-    , xml
