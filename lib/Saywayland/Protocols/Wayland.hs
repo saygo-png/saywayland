@@ -48,7 +48,7 @@ data WL_shm_pool = WL_shm_pool {wlid :: Word32, fd :: Fd, size :: IORef Int}
 
 makeFieldsId ''WL_shm_pool
 
-data WL_shm = WL_shm {wlid :: Word32, formats :: IORef [Int]}
+data WL_shm = WL_shm {wlid :: Word32, formats :: IORef [Enum_wl_shm_format]}
 
 makeFieldsId ''WL_shm
 
@@ -308,7 +308,7 @@ instance Interface' WL_shm_pool Client where
 
   runRequest shm_pool request@Request_wl_shm_pool_create_buffer{id = bufId, offset = offset', width = width', height = height', stride = stride', format = format'} = do
     ClientEnv env <- ask
-    let buffer = WL_buffer{wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = enum_wl_shm_format' format'}
+    let buffer = WL_buffer{wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = format'}
     modifyIORef env.objects $ Map.insert bufId $ Interface buffer
     sendMessage' request shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest shm_pool request@Request_wl_shm_pool_destroy = do
@@ -337,7 +337,7 @@ instance Interface' WL_shm Client where
     modifyIORef env.objects $ Map.delete shm.wlid
     sendMessage' request shm.wlid (getOpcode request) $ runPut $ putEvent nodata request
 
-  runEvent shm Event_wl_shm_format{format} = modifyIORef shm.formats (fromIntegral format :)
+  runEvent shm Event_wl_shm_format{format} = modifyIORef shm.formats (format :)
 
 -- }}}
 

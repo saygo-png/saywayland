@@ -1,8 +1,10 @@
-{-# LANGUAGE TemplateHaskellQuotes #-}
+{-# LANGUAGE TemplateHaskellQuotes, OverloadedStrings #-}
 
 module Protocol (module Protocol) where
 
 -- this module's purpose is to define all requests and events that exist and should be implemented. Implementing them is handled in `Protocols/`
+
+-- todo: rewrite to NOT use Q monad in argtype derivatives
 
 import Control.Monad (unless)
 import Data.Binary
@@ -21,6 +23,7 @@ import System.FilePath (takeExtension, (</>))
 import System.Posix (Fd)
 import Text.XML.Light
 import Prelude
+import Data.Text qualified as T
 
 type VersionTable = [(String, Word32)]
 
@@ -106,7 +109,8 @@ getForType t = case t of
           )
           |]
     | name == ''Fd -> [|getFd|]
-  _ -> error $ "unsupported type" <> show t
+    | otherwise -> [|(const get)|]
+  _ -> error $ "[getForType] unsupported type: " <> show t
 
 -- | return a TH putter expression for a given Type
 putForType :: Type -> Q Exp
@@ -119,7 +123,8 @@ putForType t = case t of
     | name == ''ObjectID -> [|(const putWord32le)|]
     | name == ''NewID -> [|(const (\(x, y, z) -> putString x >> putWord32le y >> putWord32le z))|]
     | name == ''Fd -> [|const (const (pure ()))|]
-  _ -> error $ "unsupported type" <> show t
+    | otherwise -> [|(const put)|]
+  _ -> error $ "[putForType] unsupported type: " <> show t
 
 -- }}}
 
@@ -155,19 +160,23 @@ enumName' A = 1 ...
 mkEnum :: String -> String -> [(String, Int)] -> [Dec]
 mkEnum interfaceName enumName enumKV =
   [ DataD [] (mkName enumName') [] Nothing constructors [DerivClause (Just StockStrategy) [ConT ''Eq]]
-  , SigD (mkName funName) (AppT (AppT ArrowT (ConT $ mkName enumName')) (ConT ''Word32))
-  , FunD (mkName funName) clauses
-  , SigD (mkName funName') (AppT (AppT ArrowT (ConT ''Word32)) (ConT $ mkName enumName'))
-  , FunD (mkName funName') clauses'
+  , InstanceD Nothing [] (AppT (ConT ''Binary) $ ConT $ mkName enumName')
+    [ FunD 'put clauses
+    , FunD 'get clauses'
+    ]
+  , InstanceD Nothing [] (AppT (ConT ''Show) $ ConT $ mkName enumName')
+    [FunD 'show show_clauses]
   ]
   where
     enumName' = "Enum_" <> interfaceName <> "_" <> enumName
-    funName = "enum_" <> interfaceName <> "_" <> enumName
-    funName' = "enum_" <> interfaceName <> "_" <> enumName <> "'"
     constructors = (`NormalC` []) . mkName . (enumName' <>) <$> fmap fst enumKV
-    clauses = [Clause [ConP (mkName $ enumName' <> k) [] []] (NormalB (LitE (IntegerL (fromIntegral v)))) [] | (k, v) <- enumKV]
+    clauses = [Clause [ConP (mkName $ enumName' <> k) [] []] (NormalB (AppE (VarE 'putWord32le) $ LitE (IntegerL (fromIntegral v)))) [] | (k, v) <- enumKV]
 
-    clauses' = [Clause [LitP (IntegerL (fromIntegral v))] (NormalB (ConE (mkName $ enumName' <> k))) [] | (k, v) <- enumKV]
+    clauses' = --[Clause [LitP (IntegerL (fromIntegral v))] (NormalB (ConE (mkName $ enumName' <> k))) [] | (k, v) <- enumKV]
+              [Clause [] (NormalB . DoE Nothing $ [BindS (VarP $ mkName "variant") $ VarE 'getWord32le, NoBindS $ CaseE (VarE $ mkName "variant") matches]) []]
+    matches = [Match (LitP (IntegerL (fromIntegral v))) (NormalB (AppE (VarE 'pure) (ConE (mkName $ enumName' <> k)))) [] | (k, v) <- enumKV]
+
+    show_clauses = [Clause [ConP (mkName $ enumName' <> k) [] []] (NormalB $ LitE $ StringL k) [] | (k,_) <- enumKV]
 
 -- }}}
 
@@ -203,7 +212,7 @@ mkEvents :: String -> String -> [Element] -> [Dec]
 mkEvents interfaceName prefix events = [DataD [] (mkName prefix') [] Nothing constructors []]
   where
     prefix' = prefix <> "_" <> interfaceName
-    buildBang x = (mkName . fromJust $ findAttr (qname "name") x, Bang NoSourceUnpackedness NoSourceStrictness, argType x)
+    buildBang x = (mkName . fromJust $ findAttr (qname "name") x, Bang NoSourceUnpackedness NoSourceStrictness, argType interfaceName x)
     buildRecord x = RecC (mkName $ prefix' <> "_" <> fromJust (findAttr (qname "name") x)) $ buildBang <$> findChildren (qname "arg") x
     constructors = fmap buildRecord events
 
@@ -279,7 +288,7 @@ mkPut interfaceName prefix prefix2 events =
             []
       where
         args = findChildren (qname "arg") element
-        argTypes = fmap argType args
+        argTypes = fmap (argType interfaceName) args
         eventName = fromJust $ findAttr (qname "name") element
 
 mkParser :: String -> String -> String -> [(Word16, Element)] -> Q [Dec]
@@ -302,7 +311,7 @@ mkParser interfaceName prefix prefix2 events =
         <&> \x -> (Clause [LitP $ IntegerL $ fromIntegral opcode, VarP adata] $ NormalB $ nestGetters (reverse $ ConE (mkName $ prefix2 <> interfaceName <> "_" <> eventName) : x)) []
       where
         args = findChildren (qname "arg") element
-        argTypes = fmap argType args
+        argTypes = fmap (argType interfaceName) args
         eventName = fromJust $ findAttr (qname "name") element
 
 mkWLEvent :: String -> String -> [(Word16, Element)] -> Q [Dec]
@@ -354,20 +363,24 @@ loadEnum e' = (fromJust $ findAttr (qname "name") e', f <$> findChildren (qname 
   where
     f e = (fromJust $ findAttr (qname "name") e, read $ fromJust $ findAttr (qname "value") e)
 
-argType :: Element -> Type
-argType x = case findAttr (qname "type") x of
-  Nothing -> error $ "arg without a type discovered" <> show x
-  Just "new_id" -> case findAttr (qname "interface") x of
-    Just _ -> ConT ''ObjectID
-    Nothing -> ConT ''NewID
-  Just "int" -> ConT ''Int
-  Just "uint" -> ConT ''Word32
-  Just "fixed" -> ConT ''Double
-  Just "string" -> ConT ''BS.ByteString
-  Just "object" -> ConT ''ObjectID
-  Just "array" -> ConT ''BS.ByteString
-  Just "fd" -> ConT ''Fd
-  Just y -> error $ "unknown type: " <> y
+argType :: String -> Element -> Type
+argType intName x = case findAttr (qname "enum") x of
+  Just x' -> ConT $ mkName $ "Enum_" <> case span (/= '.') x' of
+    (a,"") -> intName <> "_" <> a
+    (a,b) -> a <> "_" <> tail b
+  Nothing -> case findAttr (qname "type") x of
+    Nothing -> error $ "arg without a type discovered" <> show x
+    Just "new_id" -> case findAttr (qname "interface") x of
+      Just _ -> ConT ''ObjectID
+      Nothing -> ConT ''NewID
+    Just "int" -> ConT ''Int
+    Just "uint" -> ConT ''Word32
+    Just "fixed" -> ConT ''Double
+    Just "string" -> ConT ''BS.ByteString
+    Just "object" -> ConT ''ObjectID
+    Just "array" -> ConT ''BS.ByteString
+    Just "fd" -> ConT ''Fd
+    Just y -> error $ "unknown type: " <> y
 
 -- }}}
 

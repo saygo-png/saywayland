@@ -88,7 +88,7 @@ program = do
       { id = layerSurfaceId
       , surface = wlSurfaceId
       , output = 0
-      , layer = enum_zwlr_layer_shell_v1_layer Enum_zwlr_layer_shell_v1_layerbackground
+      , layer = Enum_zwlr_layer_shell_v1_layerbackground
       , namespace = "wallpaper"
       }
 
@@ -115,7 +115,7 @@ program = do
               , width = bufferWidth
               , height = bufferHeight
               , stride = bufferWidth * colorChannels
-              , format = enum_wl_shm_format colorFormat
+              , format = colorFormat
               }
 
           fileHandle <- liftIO $ fdToHandle fileDescriptor
