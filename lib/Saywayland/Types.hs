@@ -1,10 +1,9 @@
 {-# LANGUAGE FunctionalDependencies #-}
-{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeFamilies #-}
 
 module Saywayland.Types where
 
-import Control.Lens (makeFieldsId)
+import Control.Lens (makeFieldsId, Lens')
 import Control.Monad ((<=<))
 import Data.Bimap qualified as BM
 import Data.Binary
@@ -48,10 +47,10 @@ type ObjectID = Word32
 
 type NewID = (BS.ByteString, Word32, ObjectID)
 
--- | Created to obtain HasWlid within Types module. There are way better ways to achieve this.
-data Tmp = Tmp {wlid :: ObjectID}
+-- | HasWlid, a lens defined globally due to ID being a part of every wayland interface.
+class HasWlid s a | s -> a where
+  wlid :: Lens' s a
 
-makeFieldsId ''Tmp
 
 -- | Round a byte length up to the nearest 4-byte boundary.
 roundLength :: Word32 -> Int64
@@ -69,6 +68,8 @@ data EventHandler where
   EventHandler :: (Typeable e, WaylandEvent e) => (e -> Wayland Client ()) -> EventHandler
 
 -- | Wayland Environment
+
+
 data WaylandEnv (p :: Perspective) where
   ClientEnv :: ClientEnvironment Client -> WaylandEnv 'Client
   ServerEnv :: ServerEnvironment -> WaylandEnv 'Server
