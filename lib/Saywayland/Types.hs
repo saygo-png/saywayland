@@ -56,15 +56,17 @@ class DefaultIO a where
 -- | Perspective of the current Wayland Environment
 data Perspective = Client | Server
 
--- | EventHandlers, called whenever an event is received | TODO: switch Client to p
-data EventHandler where
-  EventHandler :: (Typeable e, WaylandEvent e) => (e -> Wayland Client ()) -> EventHandler
+type role EventHandler nominal
+-- | EventHandlers, called whenever an event is received
+data EventHandler p where
+  EventHandler :: (Typeable e, WaylandEvent e) => (e -> Wayland p ()) -> EventHandler p
 
 -- | Wayland Environment
 
 type role WaylandEnv nominal
 data WaylandEnv (p :: Perspective) where
   ClientEnv :: ClientEnvironment Client -> WaylandEnv 'Client
+  ClientServerEnv :: ClientEnvironment Server -> WaylandEnv 'Server
   ServerEnv :: ServerEnvironment -> WaylandEnv 'Server
 
 data ServerEnvironment = ServerEnvironment
@@ -84,7 +86,7 @@ data ClientEnvironment (p :: Perspective) = ClientEnvironment
   , globals :: IORef (BM.Bimap {-string name-} BS.ByteString {-global name-} Word32)
   , interfaceTable :: IORef (Map String (IO (Interface p)))
   , versionTable :: IORef (Map String Word32)
-  , eventHandlers :: IORef [EventHandler]
+  , eventHandlers :: IORef [EventHandler Client]
   }
 
 class

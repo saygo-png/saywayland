@@ -225,6 +225,26 @@ instance Interface' WL_display Client where
     let body = runPut $ putEvent nodata request
     sendMessage' request display.wlid (getOpcode request) body
 
+instance Interface' WL_display Server where
+  type Event WL_display = Event_wl_display
+  type Request WL_display = Request_wl_display
+  runEvent display event@Event_wl_display_delete_id{id = did} = do
+    ClientServerEnv env <- ask
+    liftIO $ modifyIORef env.objects (Map.delete did)
+    sendMessage' event display.wlid (getOpcode event) $ runPut $ putEvent nodata event
+  runEvent display event@Event_wl_display_error{object_id, code, message} = do
+    sendMessage' event display.wlid (getOpcode event) $ runPut $ putEvent nodata event
+  runRequest _display Request_wl_display_sync{callback} = do
+    ClientServerEnv env <- ask
+    mvar <- newEmptyMVar
+    callbackObject <- newObject callback WL_callback{wlid = callback, done = mvar}
+    -- TODO: synchronize there... somehow
+    putMVar mvar ()
+    let event = Event_wl_callback_done {callback_data=0}
+    runEvent callbackObject event
+  runRequest _display Request_wl_display_get_registry{registry} = do
+    registryObject <- newObject registry WL_registry{wlid=registry}
+    pure ()
 -- }}}
 
 -- WL_callback {{{
@@ -241,12 +261,13 @@ instance Interface' WL_callback Client where
 instance Interface' WL_callback Server where
   type Event WL_callback = Event_wl_callback
   type Request WL_callback = Request_wl_callback
-  runEvent callback Event_wl_callback_done{callback_data} = do
+  runEvent callback event@Event_wl_callback_done{callback_data} = do
     putMVar callback.done ()
     ServerEnv senv <- ask
     clients <- readIORef senv.clients
     let env = fromJust $ senv.attached >>= (`Map.lookup` clients)
     modifyIORef env.objects $ Map.delete callback.wlid
+    sendMessage' event callback.wlid (getOpcode event) $ runPut $ putEvent nodata event
   runRequest _ _ = pure ()
 
 -- }}}
@@ -281,6 +302,25 @@ instance Interface' WL_registry Client where
       Nothing -> error $ "interface with name `" <> show name <> "` not found."
     sendMessage' request registry.wlid (getOpcode request) $ runPut $ putEvent nodata request
 
+instance Interface' WL_registry Server where
+  type Event WL_registry = Event_wl_registry
+  type Request WL_registry = Request_wl_registry
+  runEvent registry event@Event_wl_registry_global{name, interface, version} = do
+    ClientServerEnv env <- ask
+    modifyIORef env.globals $ BM.insert interface name
+    sendMessage' event registry.wlid (getOpcode event) $ runPut $ putEvent nodata event
+  runEvent registry event@Event_wl_registry_global_remove{name} = do
+    ClientServerEnv env <- ask
+    modifyIORef env.globals $ BM.deleteR name
+    sendMessage' event registry.wlid (getOpcode event) $ runPut $ putEvent nodata event
+  runRequest _registry Request_wl_registry_bind{name, id=(interface, version, newId)} = do
+    ClientServerEnv env <- ask
+    interfaceFromName name >>= \case
+      Just x -> do
+        y' <- fromJust . Map.lookup (BS8.unpack x) <$> readIORef env.interfaceTable
+        Interface y <- liftIO y'
+        modifyIORef env.objects . Map.insert newId $ Interface $ y & wlid .~ newId
+      Nothing -> error $ "interface with name `" <> show name <> "` not found."
 -- }}}
 
 -- WL_compositor {{{
@@ -298,7 +338,16 @@ instance Interface' WL_compositor Client where
     sendMessage' request compositor.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest compositor request@Request_wl_compositor_release = do
     sendMessage' request compositor.wlid (getOpcode request) $ runPut $ putEvent nodata request
-
+  runEvent _ _ = pure ()
+instance Interface' WL_compositor Server where
+  type Event WL_compositor = Event_wl_compositor
+  type Request WL_compositor = Request_wl_compositor
+  runEvent _ _ = pure ()
+  runRequest _compositor Request_wl_compositor_create_surface{id = surfaceId} = void $ newObject surfaceId WL_surface {wlid=surfaceId}
+  runRequest _compositor Request_wl_compositor_create_region{id = regionId} = void $ newObject regionId WL_region {wlid=regionId}
+  runRequest compositor Request_wl_compositor_release = do
+    ClientServerEnv env <- ask
+    modifyIORef env.objects $ Map.delete compositor.wlid
 -- }}}
 
 -- WL_shm_pool {{{
@@ -320,7 +369,7 @@ instance Interface' WL_shm_pool Client where
     sendMessage' request shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
 
   runEvent _ _ = pure ()
-
+instance Interface' WL_shm_pool Server where
 -- }}}
 
 -- WL_shm {{{
@@ -338,7 +387,7 @@ instance Interface' WL_shm Client where
     sendMessage' request shm.wlid (getOpcode request) $ runPut $ putEvent nodata request
 
   runEvent shm Event_wl_shm_format{format} = modifyIORef shm.formats (format :)
-
+instance Interface' WL_shm Server where
 -- }}}
 
 -- WL_buffer {{{
@@ -347,10 +396,10 @@ instance Interface' WL_buffer Client where
   type Request WL_buffer = Request_wl_buffer
   runRequest buffer Request_wl_buffer_destroy{} = pure ()
   runEvent buffer Event_wl_buffer_release{} = pure ()
-
+instance Interface' WL_buffer Server where
 -- }}}
 
--- wl_data_offer {{{
+-- WL_data_offer {{{
 instance Interface' WL_data_offer Client where
   type Event WL_data_offer = Event_wl_data_offer
   type Request WL_data_offer = Request_wl_data_offer
@@ -362,10 +411,10 @@ instance Interface' WL_data_offer Client where
   runEvent _ Event_wl_data_offer_offer{} = pure ()
   runEvent _ Event_wl_data_offer_source_actions{} = pure ()
   runEvent _ Event_wl_data_offer_action{} = pure ()
-
+instance Interface' WL_data_offer Server where
 -- }}}
 
--- wl_data_source {{{
+-- WL_data_source {{{
 instance Interface' WL_data_source Client where
   type Event WL_data_source = Event_wl_data_source
   type Request WL_data_source = Request_wl_data_source
@@ -378,10 +427,10 @@ instance Interface' WL_data_source Client where
   runEvent _ Event_wl_data_source_dnd_drop_performed{} = pure ()
   runEvent _ Event_wl_data_source_dnd_finished{} = pure ()
   runEvent _ Event_wl_data_source_action{} = pure ()
-
+instance Interface' WL_data_source Server where
 -- }}}
 
--- wl_data_device {{{
+-- WL_data_device {{{
 instance Interface' WL_data_device Client where
   type Event WL_data_device = Event_wl_data_device
   type Request WL_data_device = Request_wl_data_device
@@ -394,28 +443,29 @@ instance Interface' WL_data_device Client where
   runEvent _ Event_wl_data_device_motion{} = pure ()
   runEvent _ Event_wl_data_device_drop{} = pure ()
   runEvent _ Event_wl_data_device_selection{} = pure ()
-
+instance Interface' WL_data_device Server where
 -- }}}
 
--- wl_data_device_manager {{{
+-- WL_data_device_manager {{{
 instance Interface' WL_data_device_manager Client where
   type Event WL_data_device_manager = Event_wl_data_device_manager
   type Request WL_data_device_manager = Request_wl_data_device_manager
   runRequest _ Request_wl_data_device_manager_create_data_source{} = pure ()
   runRequest _ Request_wl_data_device_manager_get_data_device{} = pure ()
   runRequest _ Request_wl_data_device_manager_release{} = pure ()
-
+instance Interface' WL_data_device_manager Server where
 -- }}}
 
--- wl_shell {{{
+-- WL_shell {{{
 instance Interface' WL_shell Client where
   type Event WL_shell = Event_wl_shell
   type Request WL_shell = Request_wl_shell
   runRequest _ Request_wl_shell_get_shell_surface{} = pure ()
 
+instance Interface' WL_shell Server where
 -- }}}
 
--- wl_shell_surface {{{
+-- WL_shell_surface {{{
 instance Interface' WL_shell_surface Client where
   type Event WL_shell_surface = Event_wl_shell_surface
   type Request WL_shell_surface = Request_wl_shell_surface
@@ -432,10 +482,10 @@ instance Interface' WL_shell_surface Client where
   runEvent _ Event_wl_shell_surface_ping{} = pure ()
   runEvent _ Event_wl_shell_surface_configure{} = pure ()
   runEvent _ Event_wl_shell_surface_popup_done{} = pure ()
-
+instance Interface' WL_shell_surface Server where
 -- }}}
 
--- wl_surface {{{
+-- WL_surface {{{
 instance Interface' WL_surface Client where
   type Event WL_surface = Event_wl_surface
   type Request WL_surface = Request_wl_surface
@@ -458,10 +508,10 @@ instance Interface' WL_surface Client where
   runEvent _ Event_wl_surface_leave{} = pure ()
   runEvent _ Event_wl_surface_preferred_buffer_scale{} = pure ()
   runEvent _ Event_wl_surface_preferred_buffer_transform{} = pure ()
-
+instance Interface' WL_surface Server where
 -- }}}
 
--- wl_seat {{{
+-- WL_seat {{{
 instance Interface' WL_seat Client where
   type Event WL_seat = Event_wl_seat
   type Request WL_seat = Request_wl_seat
@@ -471,9 +521,10 @@ instance Interface' WL_seat Client where
   runRequest _ Request_wl_seat_release{} = pure ()
   runEvent _ Event_wl_seat_capabilities{} = pure ()
   runEvent _ Event_wl_seat_name{} = pure ()
-
+instance Interface' WL_seat Server where
 -- }}}
--- wl_pointer {{{
+
+-- WL_pointer {{{
 instance Interface' WL_pointer Client where
   type Event WL_pointer = Event_wl_pointer
   type Request WL_pointer = Request_wl_pointer
@@ -490,9 +541,10 @@ instance Interface' WL_pointer Client where
   runEvent _ Event_wl_pointer_axis_discrete{} = pure ()
   runEvent _ Event_wl_pointer_axis_value120{} = pure ()
   runEvent _ Event_wl_pointer_axis_relative_direction{} = pure ()
-
+instance Interface' WL_pointer Server where
 -- }}}
--- wl_keyboard {{{
+
+-- WL_keyboard {{{
 instance Interface' WL_keyboard Client where
   type Event WL_keyboard = Event_wl_keyboard
   type Request WL_keyboard = Request_wl_keyboard
@@ -503,9 +555,10 @@ instance Interface' WL_keyboard Client where
   runEvent _ Event_wl_keyboard_key{} = pure ()
   runEvent _ Event_wl_keyboard_modifiers{} = pure ()
   runEvent _ Event_wl_keyboard_repeat_info{} = pure ()
-
+instance Interface' WL_keyboard Server where
 -- }}}
--- (getOpcode request) wl_touch {{{
+
+-- WL_touch {{{
 instance Interface' WL_touch Client where
   type Event WL_touch = Event_wl_touch
   type Request WL_touch = Request_wl_touch
@@ -518,8 +571,10 @@ instance Interface' WL_touch Client where
   runEvent _ Event_wl_touch_shape{} = pure ()
   runEvent _ Event_wl_touch_orientation{} = pure ()
 
+instance Interface' WL_touch Server where
 -- }}}
--- wl_output {{{
+
+-- WL_output {{{
 instance Interface' WL_output Client where
   type Event WL_output = Event_wl_output
   type Request WL_output = Request_wl_output
@@ -531,7 +586,9 @@ instance Interface' WL_output Client where
   runEvent _ Event_wl_output_name{} = pure ()
   runEvent _ Event_wl_output_description{} = pure ()
 
+instance Interface' WL_output Server where
 -- }}}
+
 -- WL_region {{{
 instance Interface' WL_region Client where
   type Event WL_region = Event_wl_region
@@ -540,7 +597,9 @@ instance Interface' WL_region Client where
   runRequest _ Request_wl_region_add{} = pure ()
   runRequest _ Request_wl_region_subtract{} = pure ()
 
+instance Interface' WL_region Server where
 -- }}}
+
 -- WL_subcompositor {{{
 instance Interface' WL_subcompositor Client where
   type Event WL_subcompositor = Event_wl_subcompositor
@@ -548,7 +607,9 @@ instance Interface' WL_subcompositor Client where
   runRequest _ Request_wl_subcompositor_destroy{} = pure ()
   runRequest _ Request_wl_subcompositor_get_subsurface{} = pure ()
 
+instance Interface' WL_subcompositor Server where
 -- }}}
+
 -- WL_subsurface {{{
 instance Interface' WL_subsurface Client where
   type Event WL_subsurface = Event_wl_subsurface
@@ -560,7 +621,9 @@ instance Interface' WL_subsurface Client where
   runRequest _ Request_wl_subsurface_set_sync{} = pure ()
   runRequest _ Request_wl_subsurface_set_desync{} = pure ()
 
+instance Interface' WL_subsurface Server where
 -- }}}
+
 -- WL_fixes {{{
 instance Interface' WL_fixes Client where
   type Event WL_fixes = Event_wl_fixes
@@ -568,11 +631,12 @@ instance Interface' WL_fixes Client where
   runRequest _ Request_wl_fixes_destroy{} = pure ()
   runRequest _ Request_wl_fixes_destroy_registry{} = pure ()
 
+instance Interface' WL_fixes Server where
 -- }}}
 
 -- }}}
 
--- Wrapper Functions, for QoL
+-- Wrapper Functions, for QoL {{{
 bindToInterface :: WL_registry -> BS.ByteString -> Wayland Client (Maybe Word32)
 bindToInterface registry intName = go 1
   where
@@ -591,5 +655,5 @@ bindToInterface registry intName = go 1
           runRequest registry Request_wl_registry_bind{name = x, id = (intName, ver, new_id)}
           pure $ Just new_id
         Nothing -> liftIO (threadDelay $ 100 * 1000) >> go (count + 1)
-
+-- }}}
 -- vim: foldmethod=marker

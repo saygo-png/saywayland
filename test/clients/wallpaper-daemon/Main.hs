@@ -9,7 +9,7 @@ import Data.ByteString.Lazy hiding (singleton)
 import Data.Map qualified as Map
 import Data.Maybe (fromJust)
 import Network.Socket hiding (openSocket)
-import Protocol (InterfaceTable, VersionTable)
+import Protocol (InterfaceClientTable, InterfaceServerTable, VersionTable)
 import Relude hiding (ByteString, get, isPrefixOf, put)
 import Saywayland.Protocols.Wayland
 import Saywayland.Protocols.WlrLayerShell
@@ -19,8 +19,8 @@ import System.Posix (ownerReadMode, ownerWriteMode, setFdSize, unionFileModes)
 import System.Posix.IO
 import System.Posix.SharedMem
 
-interfaceTable :: InterfaceTable
-interfaceTable = waylandInterfaceTable <> wlr_layer_shell_unstable_v1InterfaceTable
+interfaceTable :: InterfaceClientTable
+interfaceTable = waylandInterfaceClientTable <> wlr_layer_shell_unstable_v1InterfaceClientTable
 
 versionTable :: VersionTable
 versionTable = waylandVersionTable <> wlr_layer_shell_unstable_v1VersionTable

@@ -4,8 +4,6 @@ module Protocol (module Protocol) where
 
 -- this module's purpose is to define all requests and events that exist and should be implemented. Implementing them is handled in `Protocols/`
 
--- todo: rewrite to NOT use Q monad in argtype derivatives
-
 import Control.Monad (unless)
 import Data.Binary
 import Data.Binary.Get
@@ -23,7 +21,6 @@ import System.FilePath (takeExtension, (</>))
 import System.Posix (Fd)
 import Text.XML.Light
 import Prelude
-import Data.Text qualified as T
 
 type VersionTable = [(String, Word32)]
 
@@ -39,17 +36,21 @@ generateVersionTable e =
     tuple x = TupE [Just $ VarE $ mkName $ x <> "Name", Just $ VarE $ mkName $ x <> "Version"]
     defs = tuple . fromJust . findAttr (qname "name") <$> findChildren (qname "interface") e
 
-type InterfaceTable = [(String, IO (Interface Client))] -- todo: s/Client/p
+type InterfaceClientTable = [(String, IO (Interface Client))]
+type InterfaceServerTable = [(String, IO (Interface Server))]
 
 -- | generates an InterfaceTable, using formatter to format classes names - as they are to be defined by the user.
 generateInterfaceTable :: Element -> (String -> String) -> [Dec]
 generateInterfaceTable e formatter =
-  [ SigD name $ ConT ''InterfaceTable
-  , ValD (VarP name) (NormalB $ ListE defs) []
+  [ SigD cname $ ConT ''InterfaceClientTable
+  , ValD (VarP cname) (NormalB $ ListE defs) []
+  , SigD sname $ ConT ''InterfaceServerTable
+  , ValD (VarP sname) (NormalB $ ListE defs) []
   ]
   where
     protocol = fromJust $ findAttr (qname "name") e
-    name = mkName $ protocol <> "InterfaceTable"
+    cname = mkName $ protocol <> "InterfaceClientTable"
+    sname = mkName $ protocol <> "InterfaceServerTable"
     tuple x = TupE [Just $ VarE $ mkName $ x <> "Name", Just $ AppE (AppE (VarE $ mkName "<$>") $ ConE 'Interface) $ SigE (VarE $ mkName "defM") (AppT (ConT ''IO) $ ConT $ mkName $ formatter x)]
     defs = tuple . fromJust . findAttr (qname "name") <$> findChildren (qname "interface") e
 
@@ -367,7 +368,7 @@ argType :: String -> Element -> Type
 argType intName x = case findAttr (qname "enum") x of
   Just x' -> ConT $ mkName $ "Enum_" <> case span (/= '.') x' of
     (a,"") -> intName <> "_" <> a
-    (a,b) -> a <> "_" <> tail b
+    (a,_:b) -> a <> "_" <> b
   Nothing -> case findAttr (qname "type") x of
     Nothing -> error $ "arg without a type discovered" <> show x
     Just "new_id" -> case findAttr (qname "interface") x of
