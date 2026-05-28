@@ -3,26 +3,20 @@
 
 module Saywayland.Types where
 
-import Control.Lens (makeFieldsId, Lens')
-import Control.Monad ((<=<))
+import Control.Lens (Lens')
 import Data.Bimap qualified as BM
 import Data.Binary
-import Data.Binary.Get hiding (remaining)
 import Data.Binary.Put
 import Data.Bits
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BSL
-import Data.ByteString.Lazy.Internal qualified as BSL
 import Data.Data (cast)
 import Data.Map qualified as Map
 import Debug.Trace (traceIO)
-import GHC.Records (HasField)
-import GHC.Show qualified as GHC
 import Network.Socket (Socket)
 import Network.Socket.ByteString (sendManyWithFds)
 import Network.Socket.ByteString.Lazy (sendAll)
 import Relude hiding (ByteString, get, put)
-import SaywaylandTH
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
 import System.Posix (Fd)
 
@@ -40,6 +34,10 @@ waylandNull = 0
 wlDisplayID :: Word32
 wlDisplayID = 1
 
+-- | predefined empty AdditionalParserData
+nodata :: AdditionalParserData
+nodata = AdditionalParserData []
+
 -- }}}
 
 -- Types {{{
@@ -50,11 +48,6 @@ type NewID = (BS.ByteString, Word32, ObjectID)
 -- | HasWlid, a lens defined globally due to ID being a part of every wayland interface.
 class HasWlid s a | s -> a where
   wlid :: Lens' s a
-
-
--- | Round a byte length up to the nearest 4-byte boundary.
-roundLength :: Word32 -> Int64
-roundLength l = (fromIntegral l + 3) .&. (-4)
 
 -- | A Default-like structure, but using IO
 class DefaultIO a where
@@ -69,7 +62,7 @@ data EventHandler where
 
 -- | Wayland Environment
 
-
+type role WaylandEnv nominal
 data WaylandEnv (p :: Perspective) where
   ClientEnv :: ClientEnvironment Client -> WaylandEnv 'Client
   ServerEnv :: ServerEnvironment -> WaylandEnv 'Server
@@ -83,6 +76,7 @@ data ServerEnvironment = ServerEnvironment
   -- ^ Id of the currently attached client. Nothing if the env is global.
   }
 
+type role ClientEnvironment nominal
 data ClientEnvironment (p :: Perspective) = ClientEnvironment
   { socket :: Socket
   , counter :: IORef Word32
@@ -106,12 +100,9 @@ class
   runEvent :: a -> Event a -> Wayland p ()
   runRequest :: a -> Request a -> Wayland p ()
 
+type role Interface nominal
 data Interface (p :: Perspective) where
   Interface :: (Interface' i p, Typeable i) => i -> Interface p
-
--- | Cast provided interface into proxied type.
-proxyInterface :: forall i p. (Typeable i) => Proxy i -> Interface p -> Maybe i
-proxyInterface _ (Interface i) = cast i
 
 class (Typeable e) => WaylandEvent e where
   getEvent :: Word16 -> AdditionalParserData -> Get e
@@ -123,10 +114,6 @@ class (Typeable e) => WaylandEvent e where
 data AdditionalParserData = AdditionalParserData
   { fds :: [Fd]
   }
-
--- | predefined empty AdditionalParserData
-nodata :: AdditionalParserData
-nodata = AdditionalParserData []
 
 -- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.
 type Wayland p = ReaderT (WaylandEnv p) IO
@@ -143,7 +130,7 @@ newObjectId = do
   liftIO $ readIORef env.counter
 
 -- | function that inserts the given interface to the objects map with provided id as key.
-newObject :: (Typeable i) => (Interface' i 'Client) => Word32 -> i -> Wayland p i
+newObject :: (Interface' i 'Client) => Word32 -> i -> Wayland p i
 newObject intId int = do
   ClientEnv env <- ask
   liftIO $ modifyIORef env.objects (Map.insert intId $ Interface int)
@@ -154,14 +141,14 @@ See 'mkMessage'.
 -}
 sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
 sendMessageWithFds fds objectID opcode messageBody = do
-  socket <- asks (\(ClientEnv env) -> env.socket)
-  liftIO $ sendManyWithFds socket [BS.toStrict $ mkMessage objectID opcode messageBody] fds
+  ClientEnv env <- ask
+  liftIO $ sendManyWithFds env.socket [BS.toStrict $ mkMessage objectID opcode messageBody] fds
 
 sendMessage :: Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
 sendMessage objectID opcode messageBody = do
-  wlSocket <- asks (\(ClientEnv env) -> env.socket)
+  ClientEnv env <- ask
   let msg = mkMessage objectID opcode messageBody
-  liftIO . sendAll wlSocket $ msg
+  liftIO . sendAll env.socket $ msg
 
 {- | Convenience function for formatting events, before sending them.
 Events are colored in magenta following the wayland.app colorscheme.
@@ -213,17 +200,26 @@ getInterface objectID = do
   Map.lookup objectID <$> readIORef env.objects
 
 -- | getInterface chained with proxyInterface.
-getInterface' :: forall i p. (Typeable i, Interface' i p) => Proxy i -> Word32 -> Wayland p (Maybe i)
+getInterface' :: forall i p. (Typeable i) => Proxy i -> Word32 -> Wayland p (Maybe i)
 getInterface' p objectID = do
   ClientEnv env <- ask
   (proxyInterface p <=< Map.lookup objectID) <$> readIORef env.objects
 
--- }}}
+-- | Round a byte length up to the nearest 4-byte boundary.
+roundLength :: Word32 -> Int64
+roundLength l = (fromIntegral l + 3) .&. (-4)
+
+-- | Cast provided interface into proxied type.
+proxyInterface :: forall i p. (Typeable i) => Proxy i -> Interface p -> Maybe i
+proxyInterface _ (Interface i) = cast i
 
 getServerClientEnv :: Wayland Server (Maybe (ClientEnvironment Server))
 getServerClientEnv = do
   ServerEnv senv <- ask
   clients <- readIORef senv.clients
   pure $ senv.attached >>= (`Map.lookup` clients)
+
+
+-- }}}
 
 -- vim: foldmethod=marker
