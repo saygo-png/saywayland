@@ -235,7 +235,9 @@ mkShow interfaceName prefix prefix2 events =
     mkShowC e = Clause [VarP $ mkName "oid", RecP (mkName $ prefix2 <> interfaceName <> "_" <> eventName) $ fmap (\x -> (x, VarP x)) args] (NormalB $ chainShow (reverse args)) []
       where
         single x = AppE (AppE (VarE '(<>)) $ LitE $ StringL $ " " <> nameBase x <> ": ") $ AppE (VarE 'show) $ VarE x
-        chainShow [] = LitE $ StringL ""
+        chainShow [] =
+            AppE (AppE (VarE '(<>)) $ LitE $ StringL $ mconcat [arrow, interfaceName, "@"]) $
+            AppE (AppE (VarE '(<>)) (AppE (VarE 'show) $ VarE (mkName "oid"))) (LitE $ StringL $ mconcat [".", eventName])
         chainShow [x] =
           AppE
             ( AppE (VarE '(<>)) $
