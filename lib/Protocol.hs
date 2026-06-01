@@ -170,14 +170,15 @@ mkEnum interfaceName enumName enumKV =
   ]
   where
     enumName' = "Enum_" <> interfaceName <> "_" <> enumName
-    constructors = (`NormalC` []) . mkName . (enumName' <>) <$> fmap fst enumKV
-    clauses = [Clause [ConP (mkName $ enumName' <> k) [] []] (NormalB (AppE (VarE 'putWord32le) $ LitE (IntegerL (fromIntegral v)))) [] | (k, v) <- enumKV]
+    enumName'' = enumName' <> "_"
+    constructors = (`NormalC` []) . mkName . (enumName'' <>) <$> fmap fst enumKV
+    clauses = [Clause [ConP (mkName $ enumName'' <> k) [] []] (NormalB (AppE (VarE 'putWord32le) $ LitE (IntegerL (fromIntegral v)))) [] | (k, v) <- enumKV]
 
     clauses' = --[Clause [LitP (IntegerL (fromIntegral v))] (NormalB (ConE (mkName $ enumName' <> k))) [] | (k, v) <- enumKV]
               [Clause [] (NormalB . DoE Nothing $ [BindS (VarP $ mkName "variant") $ VarE 'getWord32le, NoBindS $ CaseE (VarE $ mkName "variant") matches]) []]
-    matches = [Match (LitP (IntegerL (fromIntegral v))) (NormalB (AppE (VarE 'pure) (ConE (mkName $ enumName' <> k)))) [] | (k, v) <- enumKV]
+    matches = [Match (LitP (IntegerL (fromIntegral v))) (NormalB (AppE (VarE 'pure) (ConE (mkName $ enumName'' <> k)))) [] | (k, v) <- enumKV]
 
-    show_clauses = [Clause [ConP (mkName $ enumName' <> k) [] []] (NormalB $ LitE $ StringL k) [] | (k,_) <- enumKV]
+    show_clauses = [Clause [ConP (mkName $ enumName'' <> k) [] []] (NormalB $ LitE $ StringL k) [] | (k,_) <- enumKV]
 
 -- }}}
 

@@ -85,7 +85,7 @@ program = do
               , width = bufferWidth
               , height = bufferHeight
               , stride = bufferWidth * colorChannels
-              , format = Enum_wl_shm_formatargb8888
+              , format = Enum_wl_shm_format_argb8888
               }
 
           fileHandle <- liftIO $ fdToHandle fileDescriptor

@@ -88,7 +88,7 @@ program = do
       { id = layerSurfaceId
       , surface = wlSurfaceId
       , output = 0
-      , layer = Enum_zwlr_layer_shell_v1_layerbackground
+      , layer = Enum_zwlr_layer_shell_v1_layer_background
       , namespace = "wallpaper"
       }
 

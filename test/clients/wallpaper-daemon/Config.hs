@@ -2,7 +2,7 @@ module Config (colorChannels, bufferWidth, bufferHeight, poolName, colorFormat, 
 
 import Data.ByteString.Lazy
 import Relude hiding (ByteString)
-import Saywayland.Protocols.Wayland (Enum_wl_shm_format (Enum_wl_shm_formatargb8888))
+import Saywayland.Protocols.Wayland (Enum_wl_shm_format (Enum_wl_shm_format_argb8888))
 
 bufferWidth :: Int -- WlInt
 bufferWidth = 1920
@@ -14,7 +14,7 @@ poolName :: String
 poolName = "saywallpaper-shared-pool"
 
 colorFormat :: Enum_wl_shm_format -- WlColorFormat
-colorFormat = Enum_wl_shm_formatargb8888
+colorFormat = Enum_wl_shm_format_argb8888
 
 colorChannels :: Int -- WlInt
 colorChannels = 4
