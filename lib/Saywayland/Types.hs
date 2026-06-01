@@ -66,7 +66,7 @@ data EventHandler p where
 type role WaylandEnv nominal
 data WaylandEnv (p :: Perspective) where
   ClientEnv :: ClientEnvironment Client -> WaylandEnv 'Client
-  ClientServerEnv :: ClientEnvironment Server -> WaylandEnv 'Server
+  ClientServerEnv :: ServerEnvironment -> ClientEnvironment Server -> WaylandEnv 'Server
   ServerEnv :: ServerEnvironment -> WaylandEnv 'Server
 
 data ServerEnvironment = ServerEnvironment
@@ -74,8 +74,6 @@ data ServerEnvironment = ServerEnvironment
   -- ^ global server socket
   , clients :: IORef (Map Int (ClientEnvironment Server))
   -- ^ currently connected clients
-  , attached :: Maybe Int
-  -- ^ Id of the currently attached client. Nothing if the env is global.
   }
 
 type role ClientEnvironment nominal
@@ -141,7 +139,7 @@ newObject intId int = do
 dropObject :: Word32 -> Wayland p ()
 dropObject i = ask >>= \case
   ClientEnv env -> modifyIORef env.objects $ Map.delete i
-  ClientServerEnv env -> modifyIORef env.objects $ Map.delete i
+  ClientServerEnv _ env -> modifyIORef env.objects $ Map.delete i
   _ -> undefined
 
 {- | Convenience function for sending a Wayland message.
@@ -220,13 +218,6 @@ roundLength l = (fromIntegral l + 3) .&. (-4)
 -- | Cast provided interface into proxied type.
 proxyInterface :: forall i p. (Typeable i) => Proxy i -> Interface p -> Maybe i
 proxyInterface _ (Interface i) = cast i
-
-getServerClientEnv :: Wayland Server (Maybe (ClientEnvironment Server))
-getServerClientEnv = do
-  ServerEnv senv <- ask
-  clients <- readIORef senv.clients
-  pure $ senv.attached >>= (`Map.lookup` clients)
-
 
 -- }}}
 

@@ -152,7 +152,7 @@ instance DefaultIO WL_registry where
   defM = pure WL_registry{wlid = 0}
 
 instance DefaultIO WL_buffer where
-  defM = pure WL_buffer{wlid = 0, offset = 0, width = 0, height = 0, stride = 0, format = Enum_wl_shm_formatargb8888}
+  defM = pure WL_buffer{wlid = 0, offset = 0, width = 0, height = 0, stride = 0, format = Enum_wl_shm_format_argb8888}
 
 instance DefaultIO WL_region where
   defM = pure WL_region{wlid = 0}
@@ -250,13 +250,13 @@ instance Interface' WL_display Server where
   type Event WL_display = Event_wl_display
   type Request WL_display = Request_wl_display
   runEvent display event@Event_wl_display_delete_id{id = did} = do
-    ClientServerEnv env <- ask
+    ClientServerEnv _ env <- ask
     liftIO $ modifyIORef env.objects (Map.delete did)
     sendMessage' event display.wlid (getOpcode event) $ runPut $ putEvent nodata event
   runEvent display event@Event_wl_display_error{object_id, code, message} = do
     sendMessage' event display.wlid (getOpcode event) $ runPut $ putEvent nodata event
   runRequest _display Request_wl_display_sync{callback} = do
-    ClientServerEnv env <- ask
+    ClientServerEnv _ env <- ask
     mvar <- newEmptyMVar
     callbackObject <- newObject callback WL_callback{wlid = callback, done = mvar}
     -- TODO: synchronize there... somehow
@@ -324,15 +324,15 @@ instance Interface' WL_registry Server where
   type Event WL_registry = Event_wl_registry
   type Request WL_registry = Request_wl_registry
   runEvent registry event@Event_wl_registry_global{name, interface, version} = do
-    ClientServerEnv env <- ask
+    ClientServerEnv _ env <- ask
     modifyIORef env.globals $ BM.insert interface name
     sendMessage' event registry.wlid (getOpcode event) $ runPut $ putEvent nodata event
   runEvent registry event@Event_wl_registry_global_remove{name} = do
-    ClientServerEnv env <- ask
+    ClientServerEnv _ env <- ask
     modifyIORef env.globals $ BM.deleteR name
     sendMessage' event registry.wlid (getOpcode event) $ runPut $ putEvent nodata event
   runRequest _registry Request_wl_registry_bind{name, id=(interface, version, newId)} = do
-    ClientServerEnv env <- ask
+    ClientServerEnv _ env <- ask
     interfaceFromName name >>= \case
       Just x -> do
         y' <- fromJust . Map.lookup (BS8.unpack x) <$> readIORef env.interfaceTable
@@ -390,11 +390,11 @@ instance Interface' WL_shm_pool Server where
   type Request WL_shm_pool = Request_wl_shm_pool
 
   runRequest _shm_pool Request_wl_shm_pool_create_buffer{id=bufId, offset=offset', width = width', height = height', stride = stride', format = format'} = do
-    ClientServerEnv env <- ask
+    ClientServerEnv _ env <- ask
     let buffer = WL_buffer{wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = format'}
     modifyIORef env.objects $ Map.insert bufId $ Interface buffer
   runRequest shm_pool Request_wl_shm_pool_destroy = do
-    ClientServerEnv env <- ask
+    ClientServerEnv _ env <- ask
     dropObject shm_pool.wlid
   runRequest shm_pool Request_wl_shm_pool_resize{size = size'} = do
     liftIO . setFdSize shm_pool.fd $ fromIntegral size'
@@ -435,7 +435,7 @@ instance Interface' WL_shm Server where
   type Event WL_shm = Event_wl_shm
   type Request WL_shm = Request_wl_shm
   runRequest _shm Request_wl_shm_create_pool{id = poolId, fd = fd', size = size'} = do
-    ClientServerEnv env <- ask
+    ClientServerEnv _ env <- ask
     result <- liftIO $ try $ mmap nullPtr
       (fromIntegral size')
       (protRead <> protWrite)
@@ -449,7 +449,7 @@ instance Interface' WL_shm Server where
     ptrRef <- newIORef ptr'
     modifyIORef env.objects $ Map.insert poolId $ Interface $ WL_shm_pool{wlid = poolId, fd = fd', size = sizeRef, ptr = ptrRef}
   runRequest shm Request_wl_shm_release = do
-    ClientServerEnv env <- ask
+    ClientServerEnv _ env <- ask
     dropObject shm.wlid
   runEvent shm event@Event_wl_shm_format{format} = do
     sendMessage' event shm.wlid (getOpcode event) $ runPut $ putEvent nodata event
@@ -589,7 +589,7 @@ instance Interface' WL_surface Server where
       , frameCbs = []
       }
   runRequest surface Request_wl_surface_commit = do
-    ClientServerEnv env <- ask
+    ClientServerEnv _ env <- ask
     pending <- readIORef surface.pendingState
     let cu = ContentUpdate
           { state = pending
