@@ -21,6 +21,7 @@ import System.FilePath (takeExtension, (</>))
 import System.Posix (Fd)
 import Text.XML.Light
 import Prelude
+import Data.IORef (readIORef, writeIORef)
 
 type VersionTable = [(String, Word32)]
 
@@ -84,33 +85,32 @@ putFixed24_8 :: Double -> Put
 putFixed24_8 d = putInt32le $ fromIntegral @Integer $ round $ d * 256
 
 -- | Get an Fd from previously obtained ancillary data
-getFd :: AdditionalParserData -> Get Fd
-getFd dat = case Relude.nonEmpty dat.fds of
-  Nothing -> error "No file descriptor found in ancillary data!"
-  Just fd -> pure $ Relude.head fd
+getFd :: AdditionalParserData -> IO (Get Fd)
+getFd dat = readIORef dat.fds >>= \case
+  -- todo: this edge case can be avoided, if instead of IORef, TQueue was used AND handleMessage was spawned asynchronously.
+  [] -> error "No file descriptor found in ancillary data!"
+  (fd:fds) -> writeIORef dat.fds fds $> pure fd
 
 -- | return a TH getter expression for a given Type
 getForType :: Type -> Q Exp
 getForType t = case t of
   ConT name
-    | name == ''Int -> [|(const $ fromIntegral <$> getWord32le)|]
-    | name == ''Word32 -> [|(const getWord32le)|]
-    | name == ''BS.ByteString -> [|(const getString)|]
-    | name == ''Double -> [|(const getFixed24_8)|]
-    | name == ''ObjectID -> [|(const getWord32le)|]
+    | name == ''Int -> [|const (pure $ fromIntegral <$> getWord32le)|]
+    | name == ''Word32 -> [|const (pure getWord32le)|]
+    | name == ''BS.ByteString -> [|const (pure getString)|]
+    | name == ''Double -> [|const (pure getFixed24_8)|]
+    | name == ''ObjectID -> [|const (pure getWord32le)|]
     | name == ''NewID ->
-        [|
-          ( const
+        [| ( const $ pure
               ( do
                   strname <- getString
                   name' <- getWord32le
                   id' <- getWord32le
                   pure (strname, name', id')
-              )
-          )
-          |]
+            ))
+        |]
     | name == ''Fd -> [|getFd|]
-    | otherwise -> [|(const get)|]
+    | otherwise -> [|const (pure get)|]
   _ -> error $ "[getForType] unsupported type: " <> show t
 
 -- | return a TH putter expression for a given Type
@@ -295,28 +295,34 @@ mkPut interfaceName prefix prefix2 events =
         argTypes = fmap (argType interfaceName) args
         eventName = fromJust $ findAttr (qname "name") element
 
+
 mkParser :: String -> String -> String -> [(Word16, Element)] -> Q [Dec]
 mkParser interfaceName prefix prefix2 events =
   mapM mkClause events <&> \m ->
     bool
-      [ SigD (mkName prefix) (AppT (AppT ArrowT $ ConT ''Word16) $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''Get) $ ConT $ mkName $ prefix2 <> interfaceName))
+      [ SigD (mkName prefix) (AppT (AppT ArrowT $ ConT ''Word16) $ AppT (AppT ArrowT $ ConT ''AdditionalParserData) (AppT (ConT ''IO) $ AppT (ConT ''Get) $ ConT $ mkName $ prefix2 <> interfaceName))
       , FunD (mkName prefix) m
       ]
       []
       (null m)
   where
-    nestGetters [] = undefined
-    nestGetters [x] = AppE (VarE 'pure) x
-    nestGetters [x, y] = InfixE (Just y) (VarE '(<$>)) (Just $ AppE x $ VarE adata)
-    nestGetters (x : xs) = InfixE (Just $ nestGetters xs) (VarE '(<*>)) (Just $ AppE x $ VarE adata)
     mkClause :: (Word16, Element) -> Q Clause
     mkClause (opcode, element) =
-      mapM getForType argTypes
-        <&> \x -> (Clause [LitP $ IntegerL $ fromIntegral opcode, VarP adata] $ NormalB $ nestGetters (reverse $ ConE (mkName $ prefix2 <> interfaceName <> "_" <> eventName) : x)) []
+      mapM getForType argTypes <&> \getters ->
+        Clause [LitP $ IntegerL $ fromIntegral opcode, VarP adata]
+          (NormalB $ DoE Nothing $ [BindS (VarP $ mkName $ fromJust $ findAttr (qname "name") a) (AppE getter $ VarE adata) | (a,getter) <- zip args getters]
+          <> [NoBindS $ AppE (VarE 'pure) $ nestGetters $ reverse $ ConE (mkName $ prefix2 <> interfaceName <> "_" <> eventName):fmap mkexpr args]) []
       where
         args = findChildren (qname "arg") element
         argTypes = fmap (argType interfaceName) args
         eventName = fromJust $ findAttr (qname "name") element
+
+        mkexpr x = VarE $ mkName $ fromJust $ findAttr (qname "name") x
+
+    nestGetters [] = undefined
+    nestGetters [x] = AppE (VarE 'pure) x
+    nestGetters [x, y] = InfixE (Just y) (VarE '(<$>)) (Just x) 
+    nestGetters (x : xs) = InfixE (Just $ nestGetters xs) (VarE '(<*>)) (Just x)
 
 mkWLEvent :: String -> String -> [(Word16, Element)] -> Q [Dec]
 mkWLEvent interfaceName prefix2 events = do

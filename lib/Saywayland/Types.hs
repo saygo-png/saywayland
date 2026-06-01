@@ -35,8 +35,8 @@ wlDisplayID :: Word32
 wlDisplayID = 1
 
 -- | predefined empty AdditionalParserData
-nodata :: AdditionalParserData
-nodata = AdditionalParserData []
+nodata :: IO AdditionalParserData
+nodata = newIORef [] <&> AdditionalParserData
 
 -- }}}
 
@@ -70,10 +70,14 @@ data WaylandEnv (p :: Perspective) where
   ServerEnv :: ServerEnvironment -> WaylandEnv 'Server
 
 data ServerEnvironment = ServerEnvironment
-  { socket :: Socket
-  -- ^ global server socket
+  { 
+  -- | global server socket
+    socket :: Socket
+  , socketPath :: FilePath
+  -- | currently connected clients
   , clients :: IORef (Map Int (ClientEnvironment Server))
-  -- ^ currently connected clients
+  , interfaceTable :: IORef (Map String (IO (Interface Server)))
+  , versionTable :: IORef (Map String Word32)
   }
 
 type role ClientEnvironment nominal
@@ -84,7 +88,7 @@ data ClientEnvironment (p :: Perspective) = ClientEnvironment
   , globals :: IORef (BM.Bimap {-string name-} BS.ByteString {-global name-} Word32)
   , interfaceTable :: IORef (Map String (IO (Interface p)))
   , versionTable :: IORef (Map String Word32)
-  , eventHandlers :: IORef [EventHandler Client]
+  , eventHandlers :: IORef [EventHandler p]
   }
 
 class
@@ -105,14 +109,14 @@ data Interface (p :: Perspective) where
   Interface :: (Interface' i p, Typeable i) => i -> Interface p
 
 class (Typeable e) => WaylandEvent e where
-  getEvent :: Word16 -> AdditionalParserData -> Get e
+  getEvent :: Word16 -> AdditionalParserData -> IO (Get e)
   putEvent :: AdditionalParserData -> e -> Put
   getOpcode :: e -> Word16
   showEvent :: ObjectID -> e -> String
 
 -- | Additional data passed to the TemplateHaskell-generated `getEvent`.
 data AdditionalParserData = AdditionalParserData
-  { fds :: [Fd]
+  { fds :: IORef [Fd]
   }
 
 -- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.
@@ -130,12 +134,11 @@ newObjectId = do
   liftIO $ readIORef env.counter
 
 -- | function that inserts the given interface to the objects map with provided id as key.
-newObject :: (Interface' i 'Client) => Word32 -> i -> Wayland p i
-newObject intId int = do
-  ClientEnv env <- ask
-  liftIO $ modifyIORef env.objects (Map.insert intId $ Interface int)
-  pure int
-
+newObject :: (Interface' i p) => Word32 -> i -> Wayland p i
+newObject intId int = ask >>= \case
+    ClientEnv env -> liftIO (modifyIORef env.objects (Map.insert intId $ Interface int)) $> int
+    ClientServerEnv _ env -> liftIO (modifyIORef env.objects (Map.insert intId $ Interface int)) $> int
+    _ -> undefined
 dropObject :: Word32 -> Wayland p ()
 dropObject i = ask >>= \case
   ClientEnv env -> modifyIORef env.objects $ Map.delete i
@@ -146,15 +149,20 @@ dropObject i = ask >>= \case
 See 'mkMessage'.
 -}
 sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
-sendMessageWithFds fds objectID opcode messageBody = do
-  ClientEnv env <- ask
-  liftIO $ sendManyWithFds env.socket [BS.toStrict $ mkMessage objectID opcode messageBody] fds
+sendMessageWithFds fds objectID opcode messageBody = ask >>= \case
+    ClientEnv env -> liftIO $ sendManyWithFds env.socket msg fds
+    ClientServerEnv _ env -> liftIO $ sendManyWithFds env.socket msg fds
+    _ -> undefined
+  where
+    msg = [BS.toStrict $ mkMessage objectID opcode messageBody]
 
 sendMessage :: Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
-sendMessage objectID opcode messageBody = do
-  ClientEnv env <- ask
-  let msg = mkMessage objectID opcode messageBody
-  liftIO . sendAll env.socket $ msg
+sendMessage objectID opcode messageBody = ask >>= \case
+    ClientEnv env -> liftIO . sendAll env.socket $ msg
+    ClientServerEnv _ env -> liftIO . sendAll env.socket $ msg
+    _ -> undefined
+    where
+      msg = mkMessage objectID opcode messageBody
 
 {- | Convenience function for formatting events, before sending them.
 Events are colored in magenta following the wayland.app colorscheme.
@@ -194,10 +202,14 @@ getColorize = do
 
 -- | helper function for getting an object from a global
 interfaceFromName :: Word32 -> Wayland p (Maybe BS.ByteString)
-interfaceFromName n = do
-  ClientEnv env <- ask
-  glob <- readIORef env.globals
-  pure $ BM.lookupR n glob
+interfaceFromName n = ask >>= \case
+    ClientEnv env -> do
+      glob <- readIORef env.globals
+      pure $ BM.lookupR n glob
+    ClientServerEnv _ env -> do
+      glob <- readIORef env.globals
+      pure $ BM.lookupR n glob
+    _ -> undefined
 
 -- | get an Interface from objects table using its Id.
 getInterface :: Word32 -> Wayland p (Maybe (Interface p))

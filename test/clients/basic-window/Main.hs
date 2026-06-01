@@ -53,7 +53,7 @@ program = do
     . void
     . forkIO
     $ finally
-      (putStrLn "\n--- Starting event loop ---" >> runReaderT (clientLoop Client env.socket) (ClientEnv env))
+      (putStrLn "\n--- Starting event loop ---" >> runReaderT (clientLoop env.socket) (ClientEnv env))
       (close env.socket >> putMVar running ())
 
   putStrLn "Binding to required interfaces..."

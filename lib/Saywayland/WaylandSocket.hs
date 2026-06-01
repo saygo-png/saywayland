@@ -18,7 +18,7 @@ import GHC.IORef (IORef (IORef))
 import Network.Socket
 import Network.Socket.ByteString (recvMsg)
 import Protocol
-import Relude (LazyStrict (toLazy), MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), Word16, Word32, forM_, for_, newIORef, readIORef, traceShow)
+import Relude (LazyStrict (toLazy), MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), Word16, Word32, forM_, for_, newIORef, readIORef, traceShow, modifyIORef)
 import Saywayland.Types
 import System.Console.ANSI (Color (Magenta), ColorIntensity (Vivid))
 import System.Directory (doesFileExist)
@@ -26,21 +26,37 @@ import System.Environment.Blank (getEnv)
 import System.FilePath
 import System.Posix (Fd (Fd))
 import Prelude
+import Saywayland.Protocols.Wayland
 
 -- Listeners {{{
 
--- | listen for client connections in provided socket. Don't use it just yet.
-listenForClients :: Socket -> Wayland Server ()
-listenForClients sock = do
-  env <- ask
-  -- NO IMPL: should create WL_display on start.
+-- | listen for client connections in provided socket.
+listenForClients :: Wayland Server ()
+listenForClients = do
+  ServerEnv env <- ask
+  
+  (sock, _) <- liftIO $ accept env.socket
+
+  liftIO $ traceIO "New client connected."
+
   serial <- liftIO $ newIORef 0
-  objectsref <- liftIO $ newIORef Map.empty
+  objectsref <- liftIO $ newIORef $ Map.singleton 1 $ Interface WL_display {wlid = 1}
   globalsref <- liftIO $ newIORef BM.empty
   handlers <- newIORef []
-  let clientenv = ClientEnv $ ClientEnvironment{socket = sock {-globals = globalsref,-}, counter = serial, objects = objectsref, eventHandlers = handlers, globals = globalsref} :: WaylandEnv Client
-  _ <- liftIO $ forkIO $ runReaderT (clientLoop Server sock) clientenv
-  liftIO $ runReaderT (listenForClients sock) env
+  let intref = env.interfaceTable
+  let verref = env.versionTable
+  let clientenv = ClientServerEnv env $
+        ClientEnvironment
+        { socket = sock
+        , counter = serial
+        , objects = objectsref
+        , eventHandlers = handlers
+        , globals = globalsref
+        , interfaceTable = intref
+        , versionTable = verref
+        }
+  _ <- liftIO $ forkIO $ runReaderT (clientLoop sock) clientenv
+  listenForClients
 
 getHeader :: Get (Word32, Word16, Word16)
 getHeader = (,,) <$> getWord32le <*> getWord16le <*> getWord16le
@@ -60,20 +76,23 @@ decodeFds bs =
            in go rest (v : acc)
 
 -- | handle communication between a server and a client in provided socket, works both on the server and the client.
-clientLoop :: Perspective -> Socket -> Wayland Client ()
-clientLoop = clientLoop' [] ""
+clientLoop :: Socket -> Wayland p ()
+clientLoop s = do
+  ref <- newIORef []
+  clientLoop' ref "" s
 
-clientLoop' :: [Fd] -> BS.ByteString -> Perspective -> Socket -> Wayland Client ()
-clientLoop' fds bytes' as sock = do
-  (_, bytes'', cmsgs, flags) <- liftIO $ recvMsg sock 8 4096 mempty
+clientLoop' :: IORef [Fd] -> BS.ByteString -> Socket -> Wayland p ()
+clientLoop' fds bytes' sock = do
+  (_, bytes'', cmsgs, _flags) <- liftIO $ recvMsg sock 8 4096 mempty
   let newFds = concatMap (decodeFds . cmsgData) $ filter (\x -> cmsgId x == CmsgIdFds) cmsgs
   let bytes = bytes' <> bytes''
+  modifyIORef fds (<> newFds)
   bool
     ( case extractMessage bytes of
-        Just (oid, opcode, x, y) -> handleMessage as oid (fds ++ newFds) opcode x >> clientLoop' [] {-hopefully fd passing won't break horrifyingly-} y as sock
+        Just (oid, opcode, x, y) -> handleMessage oid fds opcode x >> clientLoop' fds y sock
         Nothing -> undefined
     )
-    (clientLoop' (fds ++ newFds) bytes as sock)
+    (clientLoop' fds bytes sock)
     (isPartial bytes)
 
 isPartial :: BS.ByteString -> Bool
@@ -89,28 +108,51 @@ extractMessage s = case runGetOrFail getHeader (BL.fromStrict s) of
       payload = fromIntegral $ size - headerSize
       rest = BS.toStrict rest'
 
-handleMessage :: Perspective -> ObjectID -> [Fd] -> Word16 -> BS.ByteString -> Wayland Client ()
-handleMessage as oid fds opcode msg = do
-  ClientEnv env <- ask
-  objects <- readIORef env.objects
-  case Map.lookup oid objects of
-    Just (Interface x) -> case as of
-      Client -> dispatchClientMessage x oid fds opcode msg
-      Server -> undefined
-    Nothing -> error $ "invalid object reference with id: " <> show oid
+handleMessage :: ObjectID -> IORef [Fd] -> Word16 -> BS.ByteString -> Wayland p ()
+handleMessage oid fds opcode msg = do
+  ask >>= \case
+    ClientEnv env -> do
+      objects <- readIORef env.objects
+      case Map.lookup oid objects of
+        Just (Interface x) -> dispatchMessage x oid fds opcode msg
+        Nothing -> error $ "invalid object reference with id: " <> show oid
+    ClientServerEnv _ env -> do
+      objects <- readIORef env.objects
+      case Map.lookup oid objects of
+        Just (Interface x) -> dispatchMessage x oid fds opcode msg
+        Nothing -> error $ "invalid object reference with id: " <> show oid
+    ServerEnv _ -> undefined 
 
-dispatchClientMessage :: forall i. (Interface' i Client) => i -> ObjectID -> [Fd] -> Word16 -> BS.ByteString -> Wayland Client ()
-dispatchClientMessage x oid fds opcode msg = do
-  case runGetOrFail (getEvent opcode $ AdditionalParserData fds) (toLazy msg) of
-    Left (_, _, err) -> fail err
-    Right (_, _, event) -> do
-      colorize <- liftIO getColorize
-      liftIO . traceIO . colorize Vivid Magenta $ showEvent oid event
-      runEvent x event
-      ClientEnv env <- ask
-      handlers <- liftIO $ readIORef env.eventHandlers
-      forM_ handlers $ \(EventHandler f) ->
-        for_ (cast event) f
+class Dispatch (p :: Perspective) where
+  dispatchMessage :: forall i. (Interface' i p) => i -> ObjectID -> IORef [Fd] -> Word16 -> BS.ByteString -> Wayland p ()
+
+instance Dispatch Client where
+  dispatchMessage x oid fds opcode msg = do
+    getter <- liftIO $ getEvent opcode $ AdditionalParserData fds
+    case runGetOrFail getter (toLazy msg) of
+      Left (_, _, err) -> fail err
+      Right (_, _, event) -> do
+        colorize <- liftIO getColorize
+        liftIO . traceIO . colorize Vivid Magenta $ showEvent oid event
+        runEvent x event
+        ClientEnv env <- ask
+        handlers <- liftIO $ readIORef env.eventHandlers
+        forM_ handlers $ \(EventHandler f) ->
+          for_ (cast event) f
+
+instance Dispatch Server where
+  dispatchMessage x oid fds opcode msg = do
+    getter <- liftIO $ getEvent opcode $ AdditionalParserData fds
+    case runGetOrFail getter (toLazy msg) of
+      Left (_, _, err) -> fail err
+      Right (_, _, event) -> do
+        colorize <- liftIO getColorize
+        liftIO . traceIO . colorize Vivid Magenta $ showEvent oid event
+        runRequest x event
+        ClientServerEnv _ env <- ask
+        handlers <- liftIO $ readIORef env.eventHandlers
+        forM_ handlers $ \(EventHandler f) ->
+          for_ (cast event) f
 
 -- }}}
 
