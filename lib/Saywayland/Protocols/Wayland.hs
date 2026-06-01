@@ -20,7 +20,11 @@ import Data.Maybe (fromJust)
 import Protocol
 import Relude hiding (get)
 import Saywayland.Types
-import System.Posix (Fd)
+import System.Posix (Fd, setFdSize)
+import Foreign (Ptr, nullPtr, withForeignPtr)
+import MMAP (mmap, protRead, protWrite, mapShared, mkMmapFlags, munmap)
+import Control.Exception (try)
+import Debug.Trace (traceIO)
 
 -- TemplateHaskell Definitions {{{
 $(loadProtocolFile False "protocols/wayland.xml")
@@ -44,7 +48,7 @@ data WL_compositor = WL_compositor {wlid :: Word32}
 
 makeFieldsId ''WL_compositor
 
-data WL_shm_pool = WL_shm_pool {wlid :: Word32, fd :: Fd, size :: IORef Int}
+data WL_shm_pool = WL_shm_pool {wlid :: Word32, fd :: Fd, size :: IORef Int, ptr :: IORef (Ptr ())}
 
 makeFieldsId ''WL_shm_pool
 
@@ -87,7 +91,21 @@ data WL_shell_surface = WL_shell_surface {wlid :: Word32}
 
 makeFieldsId ''WL_shell_surface
 
-data WL_surface = WL_surface {wlid :: Word32}
+data ContentUpdate = ContentUpdate
+  { state :: SurfaceState
+  }
+
+data SurfaceState = SurfaceState
+  {
+    buffer      :: Maybe ObjectID
+  , offset      :: (Int, Int)
+  , damage      :: [(Int, Int, Int, Int)]
+  , frameCbs    :: [ObjectID]
+  }
+
+emptySurfaceState = SurfaceState Nothing (0,0) [] []
+
+data WL_surface = WL_surface {wlid :: Word32, pendingState :: IORef SurfaceState, activeState :: IORef SurfaceState, cuQueue :: IORef [ContentUpdate]}
 
 makeFieldsId ''WL_surface
 
@@ -146,7 +164,10 @@ instance DefaultIO WL_compositor where
   defM = pure WL_compositor{wlid = 0}
 
 instance DefaultIO WL_shm_pool where
-  defM = newIORef 0 <&> WL_shm_pool 0 0
+  defM = do
+    ref <- newIORef 0
+    ptrRef <- newIORef nullPtr
+    pure $ WL_shm_pool 0 0 ref ptrRef
 
 instance DefaultIO WL_shm where
   defM = newIORef [] <&> WL_shm 0
@@ -263,10 +284,7 @@ instance Interface' WL_callback Server where
   type Request WL_callback = Request_wl_callback
   runEvent callback event@Event_wl_callback_done{callback_data} = do
     putMVar callback.done ()
-    ServerEnv senv <- ask
-    clients <- readIORef senv.clients
-    let env = fromJust $ senv.attached >>= (`Map.lookup` clients)
-    modifyIORef env.objects $ Map.delete callback.wlid
+    dropObject callback.wlid
     sendMessage' event callback.wlid (getOpcode event) $ runPut $ putEvent nodata event
   runRequest _ _ = pure ()
 
@@ -345,9 +363,7 @@ instance Interface' WL_compositor Server where
   runEvent _ _ = pure ()
   runRequest _compositor Request_wl_compositor_create_surface{id = surfaceId} = void $ newObject surfaceId WL_surface {wlid=surfaceId}
   runRequest _compositor Request_wl_compositor_create_region{id = regionId} = void $ newObject regionId WL_region {wlid=regionId}
-  runRequest compositor Request_wl_compositor_release = do
-    ClientServerEnv env <- ask
-    modifyIORef env.objects $ Map.delete compositor.wlid
+  runRequest compositor Request_wl_compositor_release = dropObject compositor.wlid
 -- }}}
 
 -- WL_shm_pool {{{
@@ -362,14 +378,41 @@ instance Interface' WL_shm_pool Client where
     sendMessage' request shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest shm_pool request@Request_wl_shm_pool_destroy = do
     ClientEnv env <- ask
-    modifyIORef env.objects $ Map.delete shm_pool.wlid
+    dropObject shm_pool.wlid
     sendMessage' request shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
-  runRequest shm_pool request@Request_wl_shm_pool_resize{size} = do
-    writeIORef shm_pool.size size
+  runRequest shm_pool request@Request_wl_shm_pool_resize{size = size'} = do
+    writeIORef shm_pool.size size'
     sendMessage' request shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata request
 
   runEvent _ _ = pure ()
 instance Interface' WL_shm_pool Server where
+  type Event WL_shm_pool = Event_wl_shm_pool
+  type Request WL_shm_pool = Request_wl_shm_pool
+
+  runRequest _shm_pool Request_wl_shm_pool_create_buffer{id=bufId, offset=offset', width = width', height = height', stride = stride', format = format'} = do
+    ClientServerEnv env <- ask
+    let buffer = WL_buffer{wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = format'}
+    modifyIORef env.objects $ Map.insert bufId $ Interface buffer
+  runRequest shm_pool Request_wl_shm_pool_destroy = do
+    ClientServerEnv env <- ask
+    dropObject shm_pool.wlid
+  runRequest shm_pool Request_wl_shm_pool_resize{size = size'} = do
+    liftIO . setFdSize shm_pool.fd $ fromIntegral size'
+    oldsize <- readIORef shm_pool.size
+    ptr <- readIORef shm_pool.ptr
+    liftIO $ munmap ptr $ fromIntegral oldsize
+    result <- liftIO $ try $ mmap nullPtr
+      (fromIntegral size' )
+      (protRead <> protWrite)
+      (mkMmapFlags mapShared mempty)
+      shm_pool.fd
+      0
+    ptr' <- case result of
+      Left  (e :: SomeException) -> liftIO (traceIO $ "mmap failed: " ++ show e) >> undefined
+      Right ptr'                  -> liftIO (traceIO $ "mmap OK, ptr = " ++ show ptr') $> ptr'
+    writeIORef shm_pool.ptr ptr'
+    writeIORef shm_pool.size size'
+  runEvent _ _ = pure ()
 -- }}}
 
 -- WL_shm {{{
@@ -379,24 +422,50 @@ instance Interface' WL_shm Client where
   runRequest shm request@Request_wl_shm_create_pool{id = poolId, fd = fd', size = size'} = do
     ClientEnv env <- ask
     sizeRef <- newIORef size'
-    modifyIORef env.objects $ Map.insert poolId $ Interface $ WL_shm_pool{wlid = poolId, fd = fd', size = sizeRef}
+    ptrRef <- newIORef nullPtr {-IIRC client doesn't need exposed -}
+    modifyIORef env.objects $ Map.insert poolId $ Interface $ WL_shm_pool{wlid = poolId, fd = fd', size = sizeRef, ptr=ptrRef}
     sendMessageWithFds' request [fd'] shm.wlid (getOpcode request) $ runPut $ putEvent (AdditionalParserData [fd']) request
   runRequest shm request@Request_wl_shm_release{} = do
     ClientEnv env <- ask
-    modifyIORef env.objects $ Map.delete shm.wlid
+    dropObject shm.wlid
     sendMessage' request shm.wlid (getOpcode request) $ runPut $ putEvent nodata request
 
   runEvent shm Event_wl_shm_format{format} = modifyIORef shm.formats (format :)
 instance Interface' WL_shm Server where
+  type Event WL_shm = Event_wl_shm
+  type Request WL_shm = Request_wl_shm
+  runRequest _shm Request_wl_shm_create_pool{id = poolId, fd = fd', size = size'} = do
+    ClientServerEnv env <- ask
+    result <- liftIO $ try $ mmap nullPtr
+      (fromIntegral size')
+      (protRead <> protWrite)
+      (mkMmapFlags mapShared mempty)
+      fd'
+      0
+    ptr' <- case result of
+      Left  (e :: SomeException) -> liftIO (traceIO $ "mmap failed: " ++ show e) >> undefined
+      Right ptr'                  -> liftIO (traceIO $ "mmap OK, ptr = " ++ show ptr') $> ptr'
+    sizeRef <- newIORef size'
+    ptrRef <- newIORef ptr'
+    modifyIORef env.objects $ Map.insert poolId $ Interface $ WL_shm_pool{wlid = poolId, fd = fd', size = sizeRef, ptr = ptrRef}
+  runRequest shm Request_wl_shm_release = do
+    ClientServerEnv env <- ask
+    dropObject shm.wlid
+  runEvent shm event@Event_wl_shm_format{format} = do
+    sendMessage' event shm.wlid (getOpcode event) $ runPut $ putEvent nodata event
 -- }}}
 
 -- WL_buffer {{{
 instance Interface' WL_buffer Client where
   type Event WL_buffer = Event_wl_buffer
   type Request WL_buffer = Request_wl_buffer
-  runRequest buffer Request_wl_buffer_destroy{} = pure ()
+  runRequest buffer Request_wl_buffer_destroy{} = dropObject buffer.wlid
   runEvent buffer Event_wl_buffer_release{} = pure ()
 instance Interface' WL_buffer Server where
+  type Event WL_buffer = Event_wl_buffer
+  type Request WL_buffer = Request_wl_buffer
+  runRequest buffer Request_wl_buffer_destroy = dropObject buffer.wlid
+  runEvent buffer event@Event_wl_buffer_release = sendMessage' event buffer.wlid (getOpcode event) $ runPut $ putEvent nodata event
 -- }}}
 
 -- WL_data_offer {{{
@@ -496,11 +565,11 @@ instance Interface' WL_surface Client where
   runRequest _ Request_wl_surface_frame{} = pure ()
   runRequest _ Request_wl_surface_set_opaque_region{} = pure ()
   runRequest _ Request_wl_surface_set_input_region{} = pure ()
-  runRequest surface request@Request_wl_surface_commit{} = do
+  runRequest surface request@Request_wl_surface_commit =
     sendMessage' request surface.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest _ Request_wl_surface_set_buffer_transform{} = pure ()
   runRequest _ Request_wl_surface_set_buffer_scale{} = pure ()
-  runRequest surface request@Request_wl_surface_damage_buffer{} = do
+  runRequest surface request@Request_wl_surface_damage_buffer{} =
     sendMessage' request surface.wlid (getOpcode request) $ runPut $ putEvent nodata request
   runRequest _ Request_wl_surface_offset{} = pure ()
   runRequest _ Request_wl_surface_get_release{} = pure ()
@@ -509,6 +578,26 @@ instance Interface' WL_surface Client where
   runEvent _ Event_wl_surface_preferred_buffer_scale{} = pure ()
   runEvent _ Event_wl_surface_preferred_buffer_transform{} = pure ()
 instance Interface' WL_surface Server where
+  type Event WL_surface = Event_wl_surface
+  type Request WL_surface = Request_wl_surface
+  runRequest surface Request_wl_surface_attach{buffer = bufferId, x, y} = do
+    modifyIORef surface.pendingState $ \ss -> ss
+      {
+        buffer = Just bufferId
+      , offset = (x, y)
+      , damage = []
+      , frameCbs = []
+      }
+  runRequest surface Request_wl_surface_commit = do
+    ClientServerEnv env <- ask
+    pending <- readIORef surface.pendingState
+    let cu = ContentUpdate
+          { state = pending
+          }
+    liftIO $ do
+      modifyIORef' surface.cuQueue $ \q -> q <> [cu]
+      writeIORef surface.activeState pending
+      writeIORef surface.pendingState emptySurfaceState
 -- }}}
 
 -- WL_seat {{{

@@ -138,6 +138,12 @@ newObject intId int = do
   liftIO $ modifyIORef env.objects (Map.insert intId $ Interface int)
   pure int
 
+dropObject :: Word32 -> Wayland p ()
+dropObject i = ask >>= \case
+  ClientEnv env -> modifyIORef env.objects $ Map.delete i
+  ClientServerEnv env -> modifyIORef env.objects $ Map.delete i
+  _ -> undefined
+
 {- | Convenience function for sending a Wayland message.
 See 'mkMessage'.
 -}

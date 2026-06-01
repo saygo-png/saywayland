@@ -53,6 +53,7 @@ library
     , template-haskell
     , unix
     , xml
+    , shared-memory
 
   hs-source-dirs:  lib
   exposed-modules:
@@ -71,6 +72,34 @@ test-suite client-wallpaper-daemon
   hs-source-dirs: test/clients/wallpaper-daemon
   main-is:        Main.hs
   other-modules:  Config
+  build-depends:
+    , relude
+    , unix
+    , network
+    , base
+    , bimap
+    , containers
+    , saywayland
+
+test-suite client-basic-window
+  import:         common-options, executable-options
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test/clients/basic-window
+  main-is:        Main.hs
+  build-depends:
+    , relude
+    , unix
+    , network
+    , base
+    , bimap
+    , containers
+    , saywayland
+
+test-suite server-basic-compositor
+  import:         common-options, executable-options
+  type:           exitcode-stdio-1.0
+  hs-source-dirs: test/servers/basic-compositor
+  main-is:        Main.hs
   build-depends:
     , relude
     , unix
