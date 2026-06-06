@@ -9,6 +9,7 @@ module Saywayland.Protocols.Wayland where
 -- this module imlements some interfaces using classes defined by the `Protocol` module.
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (try)
 import Control.Lens (makeFieldsId, (.~))
 import Data.Bimap qualified as BM
 import Data.Binary.Put (runPut)
@@ -17,14 +18,13 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.Char (toUpper)
 import Data.Map qualified as Map
 import Data.Maybe (fromJust)
+import Debug.Trace (traceIO)
+import Foreign (Ptr, nullPtr, withForeignPtr)
+import MMAP (mapShared, mkMmapFlags, mmap, munmap, protRead, protWrite)
 import Protocol
 import Relude hiding (get)
 import Saywayland.Types
 import System.Posix (Fd, setFdSize)
-import Foreign (Ptr, nullPtr, withForeignPtr)
-import MMAP (mmap, protRead, protWrite, mapShared, mkMmapFlags, munmap)
-import Control.Exception (try)
-import Debug.Trace (traceIO)
 
 -- TemplateHaskell Definitions {{{
 $(loadProtocolFile False "protocols/wayland.xml")
@@ -96,14 +96,13 @@ data ContentUpdate = ContentUpdate
   }
 
 data SurfaceState = SurfaceState
-  {
-    buffer      :: Maybe ObjectID
-  , offset      :: (Int, Int)
-  , damage      :: [(Int, Int, Int, Int)]
-  , frameCbs    :: [ObjectID]
+  { buffer :: Maybe ObjectID
+  , offset :: (Int, Int)
+  , damage :: [(Int, Int, Int, Int)]
+  , frameCbs :: [ObjectID]
   }
 
-emptySurfaceState = SurfaceState Nothing (0,0) [] []
+emptySurfaceState = SurfaceState Nothing (0, 0) [] []
 
 data WL_surface = WL_surface {wlid :: Word32, pendingState :: IORef SurfaceState, activeState :: IORef SurfaceState, cuQueue :: IORef [ContentUpdate]}
 
@@ -265,18 +264,19 @@ instance Interface' WL_display Server where
     callbackObject <- newObject callback WL_callback{wlid = callback, done = mvar}
     -- TODO: synchronize there... somehow
     putMVar mvar ()
-    let event = Event_wl_callback_done {callback_data=0}
+    let event = Event_wl_callback_done{callback_data = 0}
     runEvent callbackObject event
   runRequest _display Request_wl_display_get_registry{registry} = do
-    registryObject <- newObject registry WL_registry{wlid=registry}
+    registryObject <- newObject registry WL_registry{wlid = registry}
     ClientServerEnv _ env <- ask
-    versions <- zip [0..] . Map.toList <$> readIORef env.versionTable
-    forM_ versions $ \(name,(interface',version)) -> do
+    versions <- zip [0 ..] . Map.toList <$> readIORef env.versionTable
+    forM_ versions $ \(name, (interface', version)) -> do
       let interface = encodeUtf8 interface'
-          event = Event_wl_registry_global {name,interface,version}
+          event = Event_wl_registry_global{name, interface, version}
       nodata' <- liftIO nodata
       sendMessage' event registry (getOpcode event) . runPut $ putEvent nodata' event
       modifyIORef env.globals $ BM.insert interface name
+
 -- }}}
 
 -- WL_callback {{{
@@ -346,7 +346,7 @@ instance Interface' WL_registry Server where
     modifyIORef env.globals $ BM.deleteR name
     nodata' <- liftIO nodata
     sendMessage' event registry.wlid (getOpcode event) $ runPut $ putEvent nodata' event
-  runRequest _registry Request_wl_registry_bind{name, id=(interface, version, newId)} = do
+  runRequest _registry Request_wl_registry_bind{name, id = (interface, version, newId)} = do
     ClientServerEnv _ env <- ask
     interfaceFromName name >>= \case
       Just x -> do
@@ -354,6 +354,7 @@ instance Interface' WL_registry Server where
         Interface y <- liftIO y'
         modifyIORef env.objects . Map.insert newId $ Interface $ y & wlid .~ newId
       Nothing -> error $ "interface with name `" <> show name <> "` not found."
+
 -- }}}
 
 -- WL_compositor {{{
@@ -366,7 +367,7 @@ instance Interface' WL_compositor Client where
     pending <- newIORef emptySurfaceState
     active <- newIORef emptySurfaceState
     queue <- newIORef []
-    _ <- newObject surfaceId WL_surface {wlid=surfaceId, pendingState = pending, activeState = active, cuQueue = queue}
+    _ <- newObject surfaceId WL_surface{wlid = surfaceId, pendingState = pending, activeState = active, cuQueue = queue}
     nodata' <- liftIO nodata
     sendMessage' request compositor.wlid (getOpcode request) $ runPut $ putEvent nodata' request
   runRequest compositor request@Request_wl_compositor_create_region{id = regionId} = do
@@ -378,6 +379,7 @@ instance Interface' WL_compositor Client where
     nodata' <- liftIO nodata
     sendMessage' request compositor.wlid (getOpcode request) $ runPut $ putEvent nodata' request
   runEvent _ _ = pure ()
+
 instance Interface' WL_compositor Server where
   type Event WL_compositor = Event_wl_compositor
   type Request WL_compositor = Request_wl_compositor
@@ -386,10 +388,11 @@ instance Interface' WL_compositor Server where
     pending <- newIORef emptySurfaceState
     active <- newIORef emptySurfaceState
     queue <- newIORef []
-    _ <- newObject surfaceId WL_surface {wlid=surfaceId, pendingState = pending, activeState = active, cuQueue = queue}
+    _ <- newObject surfaceId WL_surface{wlid = surfaceId, pendingState = pending, activeState = active, cuQueue = queue}
     pure ()
-  runRequest _compositor Request_wl_compositor_create_region{id = regionId} = void $ newObject regionId WL_region {wlid=regionId}
+  runRequest _compositor Request_wl_compositor_create_region{id = regionId} = void $ newObject regionId WL_region{wlid = regionId}
   runRequest compositor Request_wl_compositor_release = dropObject compositor.wlid
+
 -- }}}
 
 -- WL_shm_pool {{{
@@ -414,11 +417,12 @@ instance Interface' WL_shm_pool Client where
     sendMessage' request shm_pool.wlid (getOpcode request) $ runPut $ putEvent nodata' request
 
   runEvent _ _ = pure ()
+
 instance Interface' WL_shm_pool Server where
   type Event WL_shm_pool = Event_wl_shm_pool
   type Request WL_shm_pool = Request_wl_shm_pool
 
-  runRequest _shm_pool Request_wl_shm_pool_create_buffer{id=bufId, offset=offset', width = width', height = height', stride = stride', format = format'} = do
+  runRequest _shm_pool Request_wl_shm_pool_create_buffer{id = bufId, offset = offset', width = width', height = height', stride = stride', format = format'} = do
     ClientServerEnv _ env <- ask
     let buffer = WL_buffer{wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = format'}
     modifyIORef env.objects $ Map.insert bufId $ Interface buffer
@@ -430,18 +434,23 @@ instance Interface' WL_shm_pool Server where
     oldsize <- readIORef shm_pool.size
     ptr <- readIORef shm_pool.ptr
     liftIO $ munmap ptr $ fromIntegral oldsize
-    result <- liftIO $ try $ mmap nullPtr
-      (fromIntegral size' )
-      (protRead <> protWrite)
-      (mkMmapFlags mapShared mempty)
-      shm_pool.fd
-      0
+    result <-
+      liftIO
+        $ try
+        $ mmap
+          nullPtr
+          (fromIntegral size')
+          (protRead <> protWrite)
+          (mkMmapFlags mapShared mempty)
+          shm_pool.fd
+          0
     ptr' <- case result of
-      Left  (e :: SomeException) -> liftIO (traceIO $ "mmap failed: " ++ show e) >> undefined
-      Right ptr'                  -> liftIO (traceIO $ "mmap OK, ptr = " ++ show ptr') $> ptr'
+      Left (e :: SomeException) -> liftIO (traceIO $ "mmap failed: " ++ show e) >> undefined
+      Right ptr' -> liftIO (traceIO $ "mmap OK, ptr = " ++ show ptr') $> ptr'
     writeIORef shm_pool.ptr ptr'
     writeIORef shm_pool.size size'
   runEvent _ _ = pure ()
+
 -- }}}
 
 -- WL_shm {{{
@@ -452,7 +461,7 @@ instance Interface' WL_shm Client where
     ClientEnv env <- ask
     sizeRef <- newIORef size'
     ptrRef <- newIORef nullPtr {-IIRC client doesn't need exposed -}
-    modifyIORef env.objects $ Map.insert poolId $ Interface $ WL_shm_pool{wlid = poolId, fd = fd', size = sizeRef, ptr=ptrRef}
+    modifyIORef env.objects $ Map.insert poolId $ Interface $ WL_shm_pool{wlid = poolId, fd = fd', size = sizeRef, ptr = ptrRef}
     fds <- newIORef [fd']
     sendMessageWithFds' request [fd'] shm.wlid (getOpcode request) $ runPut $ putEvent (AdditionalParserData fds) request
   runRequest shm request@Request_wl_shm_release{} = do
@@ -462,20 +471,25 @@ instance Interface' WL_shm Client where
     sendMessage' request shm.wlid (getOpcode request) $ runPut $ putEvent nodata' request
 
   runEvent shm Event_wl_shm_format{format} = modifyIORef shm.formats (format :)
+
 instance Interface' WL_shm Server where
   type Event WL_shm = Event_wl_shm
   type Request WL_shm = Request_wl_shm
   runRequest _shm Request_wl_shm_create_pool{id = poolId, fd = fd', size = size'} = do
     ClientServerEnv _ env <- ask
-    result <- liftIO $ try $ mmap nullPtr
-      (fromIntegral size')
-      (protRead <> protWrite)
-      (mkMmapFlags mapShared mempty)
-      fd'
-      0
+    result <-
+      liftIO
+        $ try
+        $ mmap
+          nullPtr
+          (fromIntegral size')
+          (protRead <> protWrite)
+          (mkMmapFlags mapShared mempty)
+          fd'
+          0
     ptr' <- case result of
-      Left  (e :: SomeException) -> liftIO (traceIO $ "mmap failed: " ++ show e) >> undefined
-      Right ptr'                  -> liftIO (traceIO $ "mmap OK, ptr = " ++ show ptr') $> ptr'
+      Left (e :: SomeException) -> liftIO (traceIO $ "mmap failed: " ++ show e) >> undefined
+      Right ptr' -> liftIO (traceIO $ "mmap OK, ptr = " ++ show ptr') $> ptr'
     sizeRef <- newIORef size'
     ptrRef <- newIORef ptr'
     modifyIORef env.objects $ Map.insert poolId $ Interface $ WL_shm_pool{wlid = poolId, fd = fd', size = sizeRef, ptr = ptrRef}
@@ -485,6 +499,7 @@ instance Interface' WL_shm Server where
   runEvent shm event@Event_wl_shm_format{format} = do
     nodata' <- liftIO nodata
     sendMessage' event shm.wlid (getOpcode event) $ runPut $ putEvent nodata' event
+
 -- }}}
 
 -- WL_buffer {{{
@@ -493,6 +508,7 @@ instance Interface' WL_buffer Client where
   type Request WL_buffer = Request_wl_buffer
   runRequest buffer Request_wl_buffer_destroy{} = dropObject buffer.wlid
   runEvent buffer Event_wl_buffer_release{} = pure ()
+
 instance Interface' WL_buffer Server where
   type Event WL_buffer = Event_wl_buffer
   type Request WL_buffer = Request_wl_buffer
@@ -500,6 +516,7 @@ instance Interface' WL_buffer Server where
   runEvent buffer event@Event_wl_buffer_release = do
     nodata' <- liftIO nodata
     sendMessage' event buffer.wlid (getOpcode event) $ runPut $ putEvent nodata' event
+
 -- }}}
 
 -- WL_data_offer {{{
@@ -514,7 +531,9 @@ instance Interface' WL_data_offer Client where
   runEvent _ Event_wl_data_offer_offer{} = pure ()
   runEvent _ Event_wl_data_offer_source_actions{} = pure ()
   runEvent _ Event_wl_data_offer_action{} = pure ()
-instance Interface' WL_data_offer Server where
+
+instance Interface' WL_data_offer Server
+
 -- }}}
 
 -- WL_data_source {{{
@@ -530,7 +549,9 @@ instance Interface' WL_data_source Client where
   runEvent _ Event_wl_data_source_dnd_drop_performed{} = pure ()
   runEvent _ Event_wl_data_source_dnd_finished{} = pure ()
   runEvent _ Event_wl_data_source_action{} = pure ()
-instance Interface' WL_data_source Server where
+
+instance Interface' WL_data_source Server
+
 -- }}}
 
 -- WL_data_device {{{
@@ -546,7 +567,9 @@ instance Interface' WL_data_device Client where
   runEvent _ Event_wl_data_device_motion{} = pure ()
   runEvent _ Event_wl_data_device_drop{} = pure ()
   runEvent _ Event_wl_data_device_selection{} = pure ()
-instance Interface' WL_data_device Server where
+
+instance Interface' WL_data_device Server
+
 -- }}}
 
 -- WL_data_device_manager {{{
@@ -556,7 +579,9 @@ instance Interface' WL_data_device_manager Client where
   runRequest _ Request_wl_data_device_manager_create_data_source{} = pure ()
   runRequest _ Request_wl_data_device_manager_get_data_device{} = pure ()
   runRequest _ Request_wl_data_device_manager_release{} = pure ()
-instance Interface' WL_data_device_manager Server where
+
+instance Interface' WL_data_device_manager Server
+
 -- }}}
 
 -- WL_shell {{{
@@ -565,7 +590,8 @@ instance Interface' WL_shell Client where
   type Request WL_shell = Request_wl_shell
   runRequest _ Request_wl_shell_get_shell_surface{} = pure ()
 
-instance Interface' WL_shell Server where
+instance Interface' WL_shell Server
+
 -- }}}
 
 -- WL_shell_surface {{{
@@ -585,7 +611,9 @@ instance Interface' WL_shell_surface Client where
   runEvent _ Event_wl_shell_surface_ping{} = pure ()
   runEvent _ Event_wl_shell_surface_configure{} = pure ()
   runEvent _ Event_wl_shell_surface_popup_done{} = pure ()
-instance Interface' WL_shell_surface Server where
+
+instance Interface' WL_shell_surface Server
+
 -- }}}
 
 -- WL_surface {{{
@@ -600,7 +628,7 @@ instance Interface' WL_surface Client where
   runRequest _ Request_wl_surface_frame{} = pure ()
   runRequest _ Request_wl_surface_set_opaque_region{} = pure ()
   runRequest _ Request_wl_surface_set_input_region{} = pure ()
-  runRequest surface request@Request_wl_surface_commit =do
+  runRequest surface request@Request_wl_surface_commit = do
     nodata' <- liftIO nodata
     sendMessage' request surface.wlid (getOpcode request) $ runPut $ putEvent nodata' request
   runRequest _ Request_wl_surface_set_buffer_transform{} = pure ()
@@ -614,27 +642,30 @@ instance Interface' WL_surface Client where
   runEvent _ Event_wl_surface_leave{} = pure ()
   runEvent _ Event_wl_surface_preferred_buffer_scale{} = pure ()
   runEvent _ Event_wl_surface_preferred_buffer_transform{} = pure ()
+
 instance Interface' WL_surface Server where
   type Event WL_surface = Event_wl_surface
   type Request WL_surface = Request_wl_surface
   runRequest surface Request_wl_surface_attach{buffer = bufferId, x, y} = do
-    modifyIORef surface.pendingState $ \ss -> ss
-      {
-        buffer = Just bufferId
-      , offset = (x, y)
-      , damage = []
-      , frameCbs = []
-      }
+    modifyIORef surface.pendingState $ \ss ->
+      ss
+        { buffer = Just bufferId
+        , offset = (x, y)
+        , damage = []
+        , frameCbs = []
+        }
   runRequest surface Request_wl_surface_commit = do
     ClientServerEnv _ env <- ask
     pending <- readIORef surface.pendingState
-    let cu = ContentUpdate
-          { state = pending
-          }
+    let cu =
+          ContentUpdate
+            { state = pending
+            }
     liftIO $ do
       modifyIORef' surface.cuQueue $ \q -> q <> [cu]
       writeIORef surface.activeState pending
       writeIORef surface.pendingState emptySurfaceState
+
 -- }}}
 
 -- WL_seat {{{
@@ -647,7 +678,9 @@ instance Interface' WL_seat Client where
   runRequest _ Request_wl_seat_release{} = pure ()
   runEvent _ Event_wl_seat_capabilities{} = pure ()
   runEvent _ Event_wl_seat_name{} = pure ()
-instance Interface' WL_seat Server where
+
+instance Interface' WL_seat Server
+
 -- }}}
 
 -- WL_pointer {{{
@@ -667,7 +700,9 @@ instance Interface' WL_pointer Client where
   runEvent _ Event_wl_pointer_axis_discrete{} = pure ()
   runEvent _ Event_wl_pointer_axis_value120{} = pure ()
   runEvent _ Event_wl_pointer_axis_relative_direction{} = pure ()
-instance Interface' WL_pointer Server where
+
+instance Interface' WL_pointer Server
+
 -- }}}
 
 -- WL_keyboard {{{
@@ -681,7 +716,9 @@ instance Interface' WL_keyboard Client where
   runEvent _ Event_wl_keyboard_key{} = pure ()
   runEvent _ Event_wl_keyboard_modifiers{} = pure ()
   runEvent _ Event_wl_keyboard_repeat_info{} = pure ()
-instance Interface' WL_keyboard Server where
+
+instance Interface' WL_keyboard Server
+
 -- }}}
 
 -- WL_touch {{{
@@ -697,7 +734,8 @@ instance Interface' WL_touch Client where
   runEvent _ Event_wl_touch_shape{} = pure ()
   runEvent _ Event_wl_touch_orientation{} = pure ()
 
-instance Interface' WL_touch Server where
+instance Interface' WL_touch Server
+
 -- }}}
 
 -- WL_output {{{
@@ -712,7 +750,8 @@ instance Interface' WL_output Client where
   runEvent _ Event_wl_output_name{} = pure ()
   runEvent _ Event_wl_output_description{} = pure ()
 
-instance Interface' WL_output Server where
+instance Interface' WL_output Server
+
 -- }}}
 
 -- WL_region {{{
@@ -723,7 +762,8 @@ instance Interface' WL_region Client where
   runRequest _ Request_wl_region_add{} = pure ()
   runRequest _ Request_wl_region_subtract{} = pure ()
 
-instance Interface' WL_region Server where
+instance Interface' WL_region Server
+
 -- }}}
 
 -- WL_subcompositor {{{
@@ -733,7 +773,8 @@ instance Interface' WL_subcompositor Client where
   runRequest _ Request_wl_subcompositor_destroy{} = pure ()
   runRequest _ Request_wl_subcompositor_get_subsurface{} = pure ()
 
-instance Interface' WL_subcompositor Server where
+instance Interface' WL_subcompositor Server
+
 -- }}}
 
 -- WL_subsurface {{{
@@ -747,7 +788,8 @@ instance Interface' WL_subsurface Client where
   runRequest _ Request_wl_subsurface_set_sync{} = pure ()
   runRequest _ Request_wl_subsurface_set_desync{} = pure ()
 
-instance Interface' WL_subsurface Server where
+instance Interface' WL_subsurface Server
+
 -- }}}
 
 -- WL_fixes {{{
@@ -757,7 +799,8 @@ instance Interface' WL_fixes Client where
   runRequest _ Request_wl_fixes_destroy{} = pure ()
   runRequest _ Request_wl_fixes_destroy_registry{} = pure ()
 
-instance Interface' WL_fixes Server where
+instance Interface' WL_fixes Server
+
 -- }}}
 
 -- }}}
@@ -781,5 +824,6 @@ bindToInterface registry intName = go 1
           runRequest registry Request_wl_registry_bind{name = x, id = (intName, ver, new_id)}
           pure $ Just new_id
         Nothing -> liftIO (threadDelay $ 100 * 1000) >> go (count + 1)
+
 -- }}}
 -- vim: foldmethod=marker

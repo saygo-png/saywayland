@@ -50,10 +50,10 @@ library
     , lens
     , network
     , relude
+    , shared-memory
     , template-haskell
     , unix
     , xml
-    , shared-memory
 
   hs-source-dirs:  lib
   exposed-modules:
@@ -73,13 +73,13 @@ test-suite client-wallpaper-daemon
   main-is:        Main.hs
   other-modules:  Config
   build-depends:
-    , relude
-    , unix
-    , network
     , base
     , bimap
     , containers
+    , network
+    , relude
     , saywayland
+    , unix
 
 test-suite client-basic-window
   import:         common-options, executable-options
@@ -87,13 +87,13 @@ test-suite client-basic-window
   hs-source-dirs: test/clients/basic-window
   main-is:        Main.hs
   build-depends:
-    , relude
-    , unix
-    , network
     , base
     , bimap
     , containers
+    , network
+    , relude
     , saywayland
+    , unix
 
 test-suite server-basic-compositor
   import:         common-options, executable-options
@@ -102,14 +102,14 @@ test-suite server-basic-compositor
   main-is:        Main.hs
   build-depends:
     , async
-    , relude
-    , unix
-    , network
     , base
     , bimap
     , containers
-    , directory 
+    , directory
+    , network
+    , relude
     , saywayland
+    , unix
 
 test-suite template-haskell-protocol
   import:         common-options, executable-options

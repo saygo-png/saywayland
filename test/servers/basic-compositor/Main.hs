@@ -2,14 +2,13 @@ module Main (main) where
 
 -- THIS IS JUST A SERVER. IT DOES NOT RENDER ANYTHING.
 
-import Relude
-import Saywayland
+import Control.Concurrent.Async (async, wait)
+import Control.Exception (bracket)
 import Data.Map qualified as Map
 import Network.Socket
-import Control.Exception (bracket)
-
+import Relude
+import Saywayland
 import System.Directory (removeFile)
-import Control.Concurrent.Async (async, wait)
 
 main = bracket env cleanup (runReaderT program)
   where
@@ -32,13 +31,15 @@ main = bracket env cleanup (runReaderT program)
           ref <- newIORef Map.empty
           iref <- newIORef $ Map.fromList waylandInterfaceServerTable
           vref <- newIORef $ Map.fromList waylandVersionTable
-          pure $ ServerEnv ServerEnvironment
-            { socket = sock
-            , socketPath = path
-            , clients = ref
-            , interfaceTable = iref
-            , versionTable = vref
-            }
+          pure
+            $ ServerEnv
+              ServerEnvironment
+                { socket = sock
+                , socketPath = path
+                , clients = ref
+                , interfaceTable = iref
+                , versionTable = vref
+                }
 
 program :: Wayland Server ()
 program = listenForClients

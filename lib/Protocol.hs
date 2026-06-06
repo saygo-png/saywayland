@@ -1,4 +1,5 @@
-{-# LANGUAGE TemplateHaskellQuotes, OverloadedStrings #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TemplateHaskellQuotes #-}
 
 module Protocol (module Protocol) where
 
@@ -11,6 +12,7 @@ import Data.Binary.Put (putByteString, putInt32le, putWord32le)
 import Data.Bool (bool)
 import Data.ByteString qualified as BS
 import Data.Functor
+import Data.IORef (readIORef, writeIORef)
 import Data.Maybe (fromJust)
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
@@ -21,7 +23,6 @@ import System.FilePath (takeExtension, (</>))
 import System.Posix (Fd)
 import Text.XML.Light
 import Prelude
-import Data.IORef (readIORef, writeIORef)
 
 type VersionTable = [(String, Word32)]
 
@@ -38,6 +39,7 @@ generateVersionTable e =
     defs = tuple . fromJust . findAttr (qname "name") <$> findChildren (qname "interface") e
 
 type InterfaceClientTable = [(String, IO (Interface Client))]
+
 type InterfaceServerTable = [(String, IO (Interface Server))]
 
 -- | generates an InterfaceTable, using formatter to format classes names - as they are to be defined by the user.
@@ -86,10 +88,11 @@ putFixed24_8 d = putInt32le $ fromIntegral @Integer $ round $ d * 256
 
 -- | Get an Fd from previously obtained ancillary data
 getFd :: AdditionalParserData -> IO (Get Fd)
-getFd dat = readIORef dat.fds >>= \case
-  -- todo: this edge case can be avoided, if instead of IORef, TQueue was used AND handleMessage was spawned asynchronously.
-  [] -> error "No file descriptor found in ancillary data!"
-  (fd:fds) -> writeIORef dat.fds fds $> pure fd
+getFd dat =
+  readIORef dat.fds >>= \case
+    -- todo: this edge case can be avoided, if instead of IORef, TQueue was used AND handleMessage was spawned asynchronously.
+    [] -> error "No file descriptor found in ancillary data!"
+    (fd : fds) -> writeIORef dat.fds fds $> pure fd
 
 -- | return a TH getter expression for a given Type
 getForType :: Type -> Q Exp
@@ -101,14 +104,17 @@ getForType t = case t of
     | name == ''Double -> [|const (pure getFixed24_8)|]
     | name == ''ObjectID -> [|const (pure getWord32le)|]
     | name == ''NewID ->
-        [| ( const $ pure
-              ( do
-                  strname <- getString
-                  name' <- getWord32le
-                  id' <- getWord32le
-                  pure (strname, name', id')
-            ))
-        |]
+        [|
+          ( const $
+              pure
+                ( do
+                    strname <- getString
+                    name' <- getWord32le
+                    id' <- getWord32le
+                    pure (strname, name', id')
+                )
+          )
+          |]
     | name == ''Fd -> [|getFd|]
     | otherwise -> [|const (pure get)|]
   _ -> error $ "[getForType] unsupported type: " <> show t
@@ -161,12 +167,18 @@ enumName' A = 1 ...
 mkEnum :: String -> String -> [(String, Int)] -> [Dec]
 mkEnum interfaceName enumName enumKV =
   [ DataD [] (mkName enumName') [] Nothing constructors [DerivClause (Just StockStrategy) [ConT ''Eq]]
-  , InstanceD Nothing [] (AppT (ConT ''Binary) $ ConT $ mkName enumName')
-    [ FunD 'put clauses
-    , FunD 'get clauses'
-    ]
-  , InstanceD Nothing [] (AppT (ConT ''Show) $ ConT $ mkName enumName')
-    [FunD 'show show_clauses]
+  , InstanceD
+      Nothing
+      []
+      (AppT (ConT ''Binary) $ ConT $ mkName enumName')
+      [ FunD 'put clauses
+      , FunD 'get clauses'
+      ]
+  , InstanceD
+      Nothing
+      []
+      (AppT (ConT ''Show) $ ConT $ mkName enumName')
+      [FunD 'show show_clauses]
   ]
   where
     enumName' = "Enum_" <> interfaceName <> "_" <> enumName
@@ -174,11 +186,12 @@ mkEnum interfaceName enumName enumKV =
     constructors = (`NormalC` []) . mkName . (enumName'' <>) <$> fmap fst enumKV
     clauses = [Clause [ConP (mkName $ enumName'' <> k) [] []] (NormalB (AppE (VarE 'putWord32le) $ LitE (IntegerL (fromIntegral v)))) [] | (k, v) <- enumKV]
 
-    clauses' = --[Clause [LitP (IntegerL (fromIntegral v))] (NormalB (ConE (mkName $ enumName' <> k))) [] | (k, v) <- enumKV]
-              [Clause [] (NormalB . DoE Nothing $ [BindS (VarP $ mkName "variant") $ VarE 'getWord32le, NoBindS $ CaseE (VarE $ mkName "variant") matches]) []]
+    clauses' =
+      -- [Clause [LitP (IntegerL (fromIntegral v))] (NormalB (ConE (mkName $ enumName' <> k))) [] | (k, v) <- enumKV]
+      [Clause [] (NormalB . DoE Nothing $ [BindS (VarP $ mkName "variant") $ VarE 'getWord32le, NoBindS $ CaseE (VarE $ mkName "variant") matches]) []]
     matches = [Match (LitP (IntegerL (fromIntegral v))) (NormalB (AppE (VarE 'pure) (ConE (mkName $ enumName'' <> k)))) [] | (k, v) <- enumKV]
 
-    show_clauses = [Clause [ConP (mkName $ enumName'' <> k) [] []] (NormalB $ LitE $ StringL k) [] | (k,_) <- enumKV]
+    show_clauses = [Clause [ConP (mkName $ enumName'' <> k) [] []] (NormalB $ LitE $ StringL k) [] | (k, _) <- enumKV]
 
 -- }}}
 
@@ -237,7 +250,7 @@ mkShow interfaceName prefix prefix2 events =
       where
         single x = AppE (AppE (VarE '(<>)) $ LitE $ StringL $ " " <> nameBase x <> ": ") $ AppE (VarE 'show) $ VarE x
         chainShow [] =
-            AppE (AppE (VarE '(<>)) $ LitE $ StringL $ mconcat [arrow, interfaceName, "@"]) $
+          AppE (AppE (VarE '(<>)) $ LitE $ StringL $ mconcat [arrow, interfaceName, "@"]) $
             AppE (AppE (VarE '(<>)) (AppE (VarE 'show) $ VarE (mkName "oid"))) (LitE $ StringL $ mconcat [".", eventName])
         chainShow [x] =
           AppE
@@ -295,7 +308,6 @@ mkPut interfaceName prefix prefix2 events =
         argTypes = fmap (argType interfaceName) args
         eventName = fromJust $ findAttr (qname "name") element
 
-
 mkParser :: String -> String -> String -> [(Word16, Element)] -> Q [Dec]
 mkParser interfaceName prefix prefix2 events =
   mapM mkClause events <&> \m ->
@@ -309,9 +321,14 @@ mkParser interfaceName prefix prefix2 events =
     mkClause :: (Word16, Element) -> Q Clause
     mkClause (opcode, element) =
       mapM getForType argTypes <&> \getters ->
-        Clause [LitP $ IntegerL $ fromIntegral opcode, VarP adata]
-          (NormalB $ DoE Nothing $ [BindS (VarP $ mkName $ fromJust $ findAttr (qname "name") a) (AppE getter $ VarE adata) | (a,getter) <- zip args getters]
-          <> [NoBindS $ AppE (VarE 'pure) $ nestGetters $ reverse $ ConE (mkName $ prefix2 <> interfaceName <> "_" <> eventName):fmap mkexpr args]) []
+        Clause
+          [LitP $ IntegerL $ fromIntegral opcode, VarP adata]
+          ( NormalB $
+              DoE Nothing $
+                [BindS (VarP $ mkName $ fromJust $ findAttr (qname "name") a) (AppE getter $ VarE adata) | (a, getter) <- zip args getters]
+                  <> [NoBindS $ AppE (VarE 'pure) $ nestGetters $ reverse $ ConE (mkName $ prefix2 <> interfaceName <> "_" <> eventName) : fmap mkexpr args]
+          )
+          []
       where
         args = findChildren (qname "arg") element
         argTypes = fmap (argType interfaceName) args
@@ -321,7 +338,7 @@ mkParser interfaceName prefix prefix2 events =
 
     nestGetters [] = undefined
     nestGetters [x] = AppE (VarE 'pure) x
-    nestGetters [x, y] = InfixE (Just y) (VarE '(<$>)) (Just x) 
+    nestGetters [x, y] = InfixE (Just y) (VarE '(<$>)) (Just x)
     nestGetters (x : xs) = InfixE (Just $ nestGetters xs) (VarE '(<*>)) (Just x)
 
 mkWLEvent :: String -> String -> [(Word16, Element)] -> Q [Dec]
@@ -375,9 +392,12 @@ loadEnum e' = (fromJust $ findAttr (qname "name") e', f <$> findChildren (qname 
 
 argType :: String -> Element -> Type
 argType intName x = case findAttr (qname "enum") x of
-  Just x' -> ConT $ mkName $ "Enum_" <> case span (/= '.') x' of
-    (a,"") -> intName <> "_" <> a
-    (a,_:b) -> a <> "_" <> b
+  Just x' ->
+    ConT $
+      mkName $
+        "Enum_" <> case span (/= '.') x' of
+          (a, "") -> intName <> "_" <> a
+          (a, _ : b) -> a <> "_" <> b
   Nothing -> case findAttr (qname "type") x of
     Nothing -> error $ "arg without a type discovered" <> show x
     Just "new_id" -> case findAttr (qname "interface") x of

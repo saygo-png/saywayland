@@ -1,21 +1,21 @@
 module Main (main) where
-import Saywayland
-import Relude
-import Network.Socket (SockAddr(SockAddrUnix), socket, Family (AF_UNIX), SocketType (Stream), defaultProtocol, connect, close)
-import Data.Map qualified as Map
-import Data.Bimap qualified as BM
-import Data.Maybe (fromJust)
+
 import Control.Concurrent (forkIO)
-import Control.Exception (finally, bracket)
-import System.Posix (setFdSize, fdToHandle, shmUnlink, unionFileModes, ownerWriteMode, ownerReadMode, ShmOpenFlags (ShmOpenFlags), shmOpen)
-import Data.ByteString (pack, hPut)
+import Control.Exception (bracket, finally)
+import Data.Bimap qualified as BM
+import Data.ByteString (hPut, pack)
+import Data.Map qualified as Map
+import Data.Maybe (fromJust)
+import Network.Socket (Family (AF_UNIX), SockAddr (SockAddrUnix), SocketType (Stream), close, connect, defaultProtocol, socket)
+import Relude
+import Saywayland
+import System.Posix (ShmOpenFlags (ShmOpenFlags), fdToHandle, ownerReadMode, ownerWriteMode, setFdSize, shmOpen, shmUnlink, unionFileModes)
 
 interfaceTable :: InterfaceClientTable
 interfaceTable = waylandInterfaceClientTable
 
 versionTable :: VersionTable
 versionTable = waylandVersionTable
-
 
 main :: IO ()
 main = do
@@ -36,7 +36,6 @@ main = do
           versionTable' <- newIORef $ Map.fromList versionTable
           pure $ ClientEnv $ ClientEnvironment sock counter objects globals interfaceTable' versionTable' handlers
         Nothing -> error "couldn't find `$WAYLAND_DISPLAY`, nor any open socket."
-
 
 program :: Wayland Client ()
 program = do
@@ -62,45 +61,44 @@ program = do
 
   wlCompositorId <- fromJust <$> bindToInterface registry "wl_compositor"
   wl_compositor <- fromJust <$> getInterface' (Proxy @WL_compositor) wlCompositorId
-  
 
   wlSurfaceId <- newObjectId
   runRequest wl_compositor $ Request_wl_compositor_create_surface wlSurfaceId
   surface <- fromJust <$> getInterface' (Proxy @WL_surface) wlSurfaceId
 
-  let 
-      makeSharedMemoryObject = shmOpen "wl_shm_pool" (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
-      useSharedMemoryObject fileDescriptor =
-        flip runReaderT (ClientEnv env) $ do
-          let frameSize = bufferWidth * bufferHeight * colorChannels
-          liftIO . setFdSize fileDescriptor $ fromIntegral frameSize
-          wlShmPoolId <- newObjectId
-          runRequest wl_shm $ Request_wl_shm_create_pool{id = wlShmPoolId, fd = fileDescriptor, size = frameSize}
-          wl_shm_pool <- fromJust <$> getInterface' (Proxy @WL_shm_pool) wlShmPoolId
-          wlBufferId <- newObjectId
-          runRequest wl_shm_pool
-            $ Request_wl_shm_pool_create_buffer
-              { id = wlBufferId
-              , offset = 0
-              , width = bufferWidth
-              , height = bufferHeight
-              , stride = bufferWidth * colorChannels
-              , format = Enum_wl_shm_format_argb8888
-              }
+  let
+    makeSharedMemoryObject = shmOpen "wl_shm_pool" (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
+    useSharedMemoryObject fileDescriptor =
+      flip runReaderT (ClientEnv env) $ do
+        let frameSize = bufferWidth * bufferHeight * colorChannels
+        liftIO . setFdSize fileDescriptor $ fromIntegral frameSize
+        wlShmPoolId <- newObjectId
+        runRequest wl_shm $ Request_wl_shm_create_pool{id = wlShmPoolId, fd = fileDescriptor, size = frameSize}
+        wl_shm_pool <- fromJust <$> getInterface' (Proxy @WL_shm_pool) wlShmPoolId
+        wlBufferId <- newObjectId
+        runRequest wl_shm_pool
+          $ Request_wl_shm_pool_create_buffer
+            { id = wlBufferId
+            , offset = 0
+            , width = bufferWidth
+            , height = bufferHeight
+            , stride = bufferWidth * colorChannels
+            , format = Enum_wl_shm_format_argb8888
+            }
 
-          fileHandle <- liftIO $ fdToHandle fileDescriptor
+        fileHandle <- liftIO $ fdToHandle fileDescriptor
 
-          liftIO $ hPut fileHandle image
-          runRequest surface Request_wl_surface_attach{buffer = wlBufferId, x = 0, y = 0}
-          runRequest surface Request_wl_surface_commit
+        liftIO $ hPut fileHandle image
+        runRequest surface Request_wl_surface_attach{buffer = wlBufferId, x = 0, y = 0}
+        runRequest surface Request_wl_surface_commit
 
-          -- Wait for exit
-          takeMVar running
+        -- Wait for exit
+        takeMVar running
 
   liftIO . void $ bracket makeSharedMemoryObject (const $ shmUnlink "wl_shm_pool") useSharedMemoryObject
 
-
   undefined
+
 -- | Rainbow image :D
 image :: ByteString
 image =
@@ -124,6 +122,9 @@ image =
         , let (b, g, r, a) = pixelFn x y
         , byte <- [b, g, r, a]
         ]
+
 bufferWidth = 512
+
 bufferHeight = 512
+
 colorChannels = 4

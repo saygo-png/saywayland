@@ -57,30 +57,31 @@ class DefaultIO a where
 data Perspective = Client | Server
 
 type role EventHandler nominal
+
 -- | EventHandlers, called whenever an event is received
 data EventHandler p where
   EventHandler :: (Typeable e, WaylandEvent e) => (e -> Wayland p ()) -> EventHandler p
 
 -- | Wayland Environment
-
 type role WaylandEnv nominal
+
 data WaylandEnv (p :: Perspective) where
   ClientEnv :: ClientEnvironment Client -> WaylandEnv 'Client
   ClientServerEnv :: ServerEnvironment -> ClientEnvironment Server -> WaylandEnv 'Server
   ServerEnv :: ServerEnvironment -> WaylandEnv 'Server
 
 data ServerEnvironment = ServerEnvironment
-  { 
-  -- | global server socket
-    socket :: Socket
+  { socket :: Socket
+  -- ^ global server socket
   , socketPath :: FilePath
-  -- | currently connected clients
   , clients :: IORef (Map Int (ClientEnvironment Server))
+  -- ^ currently connected clients
   , interfaceTable :: IORef (Map String (IO (Interface Server)))
   , versionTable :: IORef (Map String Word32)
   }
 
 type role ClientEnvironment nominal
+
 data ClientEnvironment (p :: Perspective) = ClientEnvironment
   { socket :: Socket
   , counter :: IORef Word32
@@ -105,6 +106,7 @@ class
   runRequest :: a -> Request a -> Wayland p ()
 
 type role Interface nominal
+
 data Interface (p :: Perspective) where
   Interface :: (Interface' i p, Typeable i) => i -> Interface p
 
@@ -135,21 +137,25 @@ newObjectId = do
 
 -- | function that inserts the given interface to the objects map with provided id as key.
 newObject :: (Interface' i p) => Word32 -> i -> Wayland p i
-newObject intId int = ask >>= \case
+newObject intId int =
+  ask >>= \case
     ClientEnv env -> liftIO (modifyIORef env.objects (Map.insert intId $ Interface int)) $> int
     ClientServerEnv _ env -> liftIO (modifyIORef env.objects (Map.insert intId $ Interface int)) $> int
     _ -> undefined
+
 dropObject :: Word32 -> Wayland p ()
-dropObject i = ask >>= \case
-  ClientEnv env -> modifyIORef env.objects $ Map.delete i
-  ClientServerEnv _ env -> modifyIORef env.objects $ Map.delete i
-  _ -> undefined
+dropObject i =
+  ask >>= \case
+    ClientEnv env -> modifyIORef env.objects $ Map.delete i
+    ClientServerEnv _ env -> modifyIORef env.objects $ Map.delete i
+    _ -> undefined
 
 {- | Convenience function for sending a Wayland message.
 See 'mkMessage'.
 -}
 sendMessageWithFds :: [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
-sendMessageWithFds fds objectID opcode messageBody = ask >>= \case
+sendMessageWithFds fds objectID opcode messageBody =
+  ask >>= \case
     ClientEnv env -> liftIO $ sendManyWithFds env.socket msg fds
     ClientServerEnv _ env -> liftIO $ sendManyWithFds env.socket msg fds
     _ -> undefined
@@ -157,12 +163,13 @@ sendMessageWithFds fds objectID opcode messageBody = ask >>= \case
     msg = [BS.toStrict $ mkMessage objectID opcode messageBody]
 
 sendMessage :: Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
-sendMessage objectID opcode messageBody = ask >>= \case
+sendMessage objectID opcode messageBody =
+  ask >>= \case
     ClientEnv env -> liftIO . sendAll env.socket $ msg
     ClientServerEnv _ env -> liftIO . sendAll env.socket $ msg
     _ -> undefined
-    where
-      msg = mkMessage objectID opcode messageBody
+  where
+    msg = mkMessage objectID opcode messageBody
 
 {- | Convenience function for formatting events, before sending them.
 Events are colored in magenta following the wayland.app colorscheme.
@@ -202,7 +209,8 @@ getColorize = do
 
 -- | helper function for getting an object from a global
 interfaceFromName :: Word32 -> Wayland p (Maybe BS.ByteString)
-interfaceFromName n = ask >>= \case
+interfaceFromName n =
+  ask >>= \case
     ClientEnv env -> do
       glob <- readIORef env.globals
       pure $ BM.lookupR n glob

@@ -18,7 +18,8 @@ import GHC.IORef (IORef (IORef))
 import Network.Socket
 import Network.Socket.ByteString (recvMsg)
 import Protocol
-import Relude (LazyStrict (toLazy), MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), Word16, Word32, forM_, for_, newIORef, readIORef, traceShow, modifyIORef)
+import Relude (LazyStrict (toLazy), MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), Word16, Word32, forM_, for_, modifyIORef, newIORef, readIORef, traceShow)
+import Saywayland.Protocols.Wayland
 import Saywayland.Types
 import System.Console.ANSI (Color (Magenta), ColorIntensity (Vivid))
 import System.Directory (doesFileExist)
@@ -26,7 +27,6 @@ import System.Environment.Blank (getEnv)
 import System.FilePath
 import System.Posix (Fd (Fd))
 import Prelude
-import Saywayland.Protocols.Wayland
 
 -- Listeners {{{
 
@@ -34,27 +34,28 @@ import Saywayland.Protocols.Wayland
 listenForClients :: Wayland Server ()
 listenForClients = do
   ServerEnv env <- ask
-  
+
   (sock, _) <- liftIO $ accept env.socket
 
   liftIO $ traceIO "New client connected."
 
   serial <- liftIO $ newIORef 0
-  objectsref <- liftIO $ newIORef $ Map.singleton 1 $ Interface WL_display {wlid = 1}
+  objectsref <- liftIO $ newIORef $ Map.singleton 1 $ Interface WL_display{wlid = 1}
   globalsref <- liftIO $ newIORef BM.empty
   handlers <- newIORef []
   let intref = env.interfaceTable
   let verref = env.versionTable
-  let clientenv = ClientServerEnv env $
-        ClientEnvironment
-        { socket = sock
-        , counter = serial
-        , objects = objectsref
-        , eventHandlers = handlers
-        , globals = globalsref
-        , interfaceTable = intref
-        , versionTable = verref
-        }
+  let clientenv =
+        ClientServerEnv env $
+          ClientEnvironment
+            { socket = sock
+            , counter = serial
+            , objects = objectsref
+            , eventHandlers = handlers
+            , globals = globalsref
+            , interfaceTable = intref
+            , versionTable = verref
+            }
   _ <- liftIO $ forkIO $ runReaderT (clientLoop sock) clientenv
   listenForClients
 
@@ -121,7 +122,7 @@ handleMessage oid fds opcode msg = do
       case Map.lookup oid objects of
         Just (Interface x) -> dispatchMessage x oid fds opcode msg
         Nothing -> error $ "invalid object reference with id: " <> show oid
-    ServerEnv _ -> undefined 
+    ServerEnv _ -> undefined
 
 class Dispatch (p :: Perspective) where
   dispatchMessage :: forall i. (Interface' i p) => i -> ObjectID -> IORef [Fd] -> Word16 -> BS.ByteString -> Wayland p ()

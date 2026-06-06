@@ -43,7 +43,8 @@ instance Interface' Zwlr_layer_shell_v1 Client where
     modifyIORef env.objects $ Map.insert layerSurfaceId $ Interface Zwlr_layer_surface_v1{wlid = layerSurfaceId}
   runRequest shell Request_zwlr_layer_shell_v1_destroy = undefined
 
-instance Interface' Zwlr_layer_shell_v1 Server where
+instance Interface' Zwlr_layer_shell_v1 Server
+
 -- }}}
 -- zwlr_layer_surface_v1 {{{
 instance Interface' Zwlr_layer_surface_v1 Client where
@@ -68,6 +69,8 @@ instance Interface' Zwlr_layer_surface_v1 Client where
   runRequest ls Request_zwlr_layer_surface_v1_set_keyboard_interactivity{} = undefined
   runRequest ls Request_zwlr_layer_surface_v1_set_layer{} = undefined
   runRequest ls Request_zwlr_layer_surface_v1_set_margin{} = undefined
-instance Interface' Zwlr_layer_surface_v1 Server where
+
+instance Interface' Zwlr_layer_surface_v1 Server
+
 -- }}}
 -- vim: foldmethod=marker
