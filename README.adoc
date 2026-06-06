@@ -3,8 +3,6 @@
 Simple Wayland client library for Haskell. Allows you to act on events and send requests.
 Currently it's a work in progress with many events and requests missing but it's enough to write a simple bar or wallpaper daemon.
 
-The template Haskell portion is vibecoded.
-
 == Usage
 
 don't
