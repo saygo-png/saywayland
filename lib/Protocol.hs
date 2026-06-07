@@ -3,30 +3,27 @@
 
 module Protocol (module Protocol) where
 
--- this module's purpose is to define all requests and events that exist and should be implemented. Implementing them is handled in `Protocols/`
+-- This module's purpose is to define all requests and events that exist and should be implemented. Implementing them is handled in `Protocols/`
 
-import Control.Monad (unless)
 import Data.Binary
 import Data.Binary.Get
 import Data.Binary.Put (putByteString, putInt32le, putWord32le)
-import Data.Bool (bool)
 import Data.ByteString qualified as BS
-import Data.Functor
-import Data.IORef (readIORef, writeIORef)
 import Data.Maybe (fromJust)
 import Language.Haskell.TH
 import Language.Haskell.TH.Syntax
-import Relude qualified
+import Relude hiding (Type, get, put)
+import Relude.Unsafe qualified as Unsafe
 import Saywayland.Types
 import System.Directory (listDirectory)
 import System.FilePath (takeExtension, (</>))
 import System.Posix (Fd)
+import Text.Show qualified
 import Text.XML.Light
-import Prelude
 
 type VersionTable = [(String, Word32)]
 
--- | generates a VersionTable for the given protocol
+-- | Generates a VersionTable for the given protocol.
 generateVersionTable :: Element -> [Dec]
 generateVersionTable e =
   [ SigD name $ ConT ''VersionTable
@@ -42,7 +39,7 @@ type InterfaceClientTable = [(String, IO (Interface Client))]
 
 type InterfaceServerTable = [(String, IO (Interface Server))]
 
--- | generates an InterfaceTable, using formatter to format classes names - as they are to be defined by the user.
+-- | Generates an InterfaceTable, using formatter to format classes names - as they are to be defined by the user.
 generateInterfaceTable :: Element -> (String -> String) -> [Dec]
 generateInterfaceTable e formatter =
   [ SigD cname $ ConT ''InterfaceClientTable
@@ -59,7 +56,7 @@ generateInterfaceTable e formatter =
 
 -- Getters/Putters {{{
 
--- | Get a Wire-encoded String
+-- | Get a Wire-encoded String.
 getString :: Get BS.ByteString
 getString = do
   len <- getWord32le
@@ -68,7 +65,7 @@ getString = do
   _ <- getByteString $ fromIntegral padding
   pure str
 
--- | Put a Wire-encoded string
+-- | Put a Wire-encoded String
 putString :: BS.ByteString -> Put
 putString s' =
   putWord32le (fromIntegral $ BS.length s)
@@ -94,7 +91,7 @@ getFd dat =
     [] -> error "No file descriptor found in ancillary data!"
     (fd : fds) -> writeIORef dat.fds fds $> pure fd
 
--- | return a TH getter expression for a given Type
+-- | Return a TH getter expression for a given Type.
 getForType :: Type -> Q Exp
 getForType t = case t of
   ConT name
@@ -105,8 +102,8 @@ getForType t = case t of
     | name == ''ObjectID -> [|const (pure getWord32le)|]
     | name == ''NewID ->
         [|
-          ( const $
-              pure
+          ( const
+              $ pure
                 ( do
                     strname <- getString
                     name' <- getWord32le
@@ -119,7 +116,7 @@ getForType t = case t of
     | otherwise -> [|const (pure get)|]
   _ -> error $ "[getForType] unsupported type: " <> show t
 
--- | return a TH putter expression for a given Type
+-- | Return a TH putter expression for a given Type.
 putForType :: Type -> Q Exp
 putForType t = case t of
   ConT name
@@ -129,7 +126,7 @@ putForType t = case t of
     | name == ''Double -> [|(const putFixed24_8)|]
     | name == ''ObjectID -> [|(const putWord32le)|]
     | name == ''NewID -> [|(const (\(x, y, z) -> putString x >> putWord32le y >> putWord32le z))|]
-    | name == ''Fd -> [|const (const (pure ()))|]
+    | name == ''Fd -> [|const (const pass)|]
     | otherwise -> [|(const put)|]
   _ -> error $ "[putForType] unsupported type: " <> show t
 
@@ -145,7 +142,7 @@ qname x = QName x Nothing Nothing
 adata :: Name
 adata = mkName "additionalData"
 
--- | Defines an integer variable with name `name` and value `x`
+-- | Defines an integer variable with name `name` and value `x`.
 mkIntVariable :: String -> Integer -> [Dec]
 mkIntVariable name x =
   [ SigD (mkName name) (ConT ''Int)
@@ -159,7 +156,7 @@ mkOpcode interfaceName fname opcode =
   , FunD (mkName $ interfaceName <> "_" <> fname <> "Opcode") [Clause [] (NormalB $ LitE $ IntegerL $ fromIntegral opcode) []]
   ]
 
-{- | Defines an enum-like along with a function to look up the value of each element
+{- | Defines an enum-like along with a function to look up the value of each element.
 example output:
 data EnumName = A | B | C | D ... deriving Eq
 enumName' A = 1 ...
@@ -178,7 +175,7 @@ mkEnum interfaceName enumName enumKV =
       Nothing
       []
       (AppT (ConT ''Show) $ ConT $ mkName enumName')
-      [FunD 'show show_clauses]
+      [FunD 'Text.Show.showsPrec show_clauses]
   ]
   where
     enumName' = "Enum_" <> interfaceName <> "_" <> enumName
@@ -187,11 +184,16 @@ mkEnum interfaceName enumName enumKV =
     clauses = [Clause [ConP (mkName $ enumName'' <> k) [] []] (NormalB (AppE (VarE 'putWord32le) $ LitE (IntegerL (fromIntegral v)))) [] | (k, v) <- enumKV]
 
     clauses' =
-      -- [Clause [LitP (IntegerL (fromIntegral v))] (NormalB (ConE (mkName $ enumName' <> k))) [] | (k, v) <- enumKV]
       [Clause [] (NormalB . DoE Nothing $ [BindS (VarP $ mkName "variant") $ VarE 'getWord32le, NoBindS $ CaseE (VarE $ mkName "variant") matches]) []]
     matches = [Match (LitP (IntegerL (fromIntegral v))) (NormalB (AppE (VarE 'pure) (ConE (mkName $ enumName'' <> k)))) [] | (k, v) <- enumKV]
 
-    show_clauses = [Clause [ConP (mkName $ enumName'' <> k) [] []] (NormalB $ LitE $ StringL k) [] | (k, _) <- enumKV]
+    show_clauses =
+      [ Clause
+          [WildP, ConP (mkName $ enumName'' <> k) [] []]
+          (NormalB $ AppE (VarE 'Text.Show.showString) (LitE (StringL k)))
+          []
+      | (k, _) <- enumKV
+      ]
 
 -- }}}
 
@@ -208,7 +210,7 @@ loadProtocols isIO path = do
 loadProtocolFile :: Bool -> FilePath -> Q [Dec]
 loadProtocolFile isIO path = do
   unless isIO $ addDependentFile path
-  protocols <- filter ((== qname "protocol") . elName) . onlyElems . parseXML <$> runIO (BS.readFile path)
+  protocols <- filter ((== qname "protocol") . elName) . onlyElems . parseXML <$> runIO (readFileBS path)
   let findInterfaces = findChildren (qname "interface")
   concat
     <$> mapM
@@ -218,10 +220,10 @@ loadProtocolFile isIO path = do
 generateTables :: Bool -> (String -> String) -> FilePath -> Q [Dec]
 generateTables isIO formatter path = do
   unless isIO $ addDependentFile path
-  protocols <- filter ((== qname "protocol") . elName) . onlyElems . parseXML <$> runIO (BS.readFile path)
-  pure $
-    concatMap (`generateInterfaceTable` formatter) protocols
-      <> concatMap generateVersionTable protocols
+  protocols <- filter ((== qname "protocol") . elName) . onlyElems . parseXML <$> runIO (readFileBS path)
+  pure
+    $ concatMap (`generateInterfaceTable` formatter) protocols
+    <> concatMap generateVersionTable protocols
 
 mkEvents :: String -> String -> [Element] -> [Dec]
 mkEvents interfaceName prefix events = [DataD [] (mkName prefix') [] Nothing constructors []]
@@ -250,13 +252,13 @@ mkShow interfaceName prefix prefix2 events =
       where
         single x = AppE (AppE (VarE '(<>)) $ LitE $ StringL $ " " <> nameBase x <> ": ") $ AppE (VarE 'show) $ VarE x
         chainShow [] =
-          AppE (AppE (VarE '(<>)) $ LitE $ StringL $ mconcat [arrow, interfaceName, "@"]) $
-            AppE (AppE (VarE '(<>)) (AppE (VarE 'show) $ VarE (mkName "oid"))) (LitE $ StringL $ mconcat [".", eventName])
+          AppE (AppE (VarE '(<>)) $ LitE $ StringL $ mconcat [arrow, interfaceName, "@"])
+            $ AppE (AppE (VarE '(<>)) (AppE (VarE 'show) $ VarE (mkName "oid"))) (LitE $ StringL $ mconcat [".", eventName])
         chainShow [x] =
           AppE
-            ( AppE (VarE '(<>)) $
-                AppE (AppE (VarE '(<>)) $ LitE $ StringL $ mconcat [arrow, interfaceName, "@"]) $
-                  AppE (AppE (VarE '(<>)) (AppE (VarE 'show) $ VarE (mkName "oid"))) (LitE $ StringL $ mconcat [".", eventName, ": "])
+            ( AppE (VarE '(<>))
+                $ AppE (AppE (VarE '(<>)) $ LitE $ StringL $ mconcat [arrow, interfaceName, "@"])
+                $ AppE (AppE (VarE '(<>)) (AppE (VarE 'show) $ VarE (mkName "oid"))) (LitE $ StringL $ mconcat [".", eventName, ": "])
             )
             $ single x
         chainShow (x : xs) = InfixE (Just $ chainShow xs) (VarE '(<>)) (Just $ single x)
@@ -323,10 +325,10 @@ mkParser interfaceName prefix prefix2 events =
       mapM getForType argTypes <&> \getters ->
         Clause
           [LitP $ IntegerL $ fromIntegral opcode, VarP adata]
-          ( NormalB $
-              DoE Nothing $
-                [BindS (VarP $ mkName $ fromJust $ findAttr (qname "name") a) (AppE getter $ VarE adata) | (a, getter) <- zip args getters]
-                  <> [NoBindS $ AppE (VarE 'pure) $ nestGetters $ reverse $ ConE (mkName $ prefix2 <> interfaceName <> "_" <> eventName) : fmap mkexpr args]
+          ( NormalB
+              $ DoE Nothing
+              $ [BindS (VarP $ mkName $ fromJust $ findAttr (qname "name") a) (AppE getter $ VarE adata) | (a, getter) <- zip args getters]
+              <> [NoBindS $ AppE (VarE 'pure) $ nestGetters $ reverse $ ConE (mkName $ prefix2 <> interfaceName <> "_" <> eventName) : fmap mkexpr args]
           )
           []
       where
@@ -381,23 +383,24 @@ loadInterface int = do
     name' = fromJust $ findAttr (qname "name") int
     verName = mkName $ name' <> "Version"
     nameName = mkName $ name' <> "Name"
-    version' = read . fromJust $ findAttr (qname "version") int
+    version' = Unsafe.read . fromJust $ findAttr (qname "version") int
     enums' = loadEnum <$> findChildren (qname "enum") int
 
 -- | Load enum data from XML spec.
 loadEnum :: Element -> (String, [(String, Int)])
 loadEnum e' = (fromJust $ findAttr (qname "name") e', f <$> findChildren (qname "entry") e')
   where
-    f e = (fromJust $ findAttr (qname "name") e, read $ fromJust $ findAttr (qname "value") e)
+    f e = (fromJust $ findAttr (qname "name") e, Unsafe.read $ fromJust $ findAttr (qname "value") e)
 
 argType :: String -> Element -> Type
 argType intName x = case findAttr (qname "enum") x of
   Just x' ->
-    ConT $
-      mkName $
-        "Enum_" <> case span (/= '.') x' of
-          (a, "") -> intName <> "_" <> a
-          (a, _ : b) -> a <> "_" <> b
+    ConT
+      $ mkName
+      $ "Enum_"
+      <> case span (/= '.') x' of
+        (a, "") -> intName <> "_" <> a
+        (a, _ : b) -> a <> "_" <> b
   Nothing -> case findAttr (qname "type") x of
     Nothing -> error $ "arg without a type discovered" <> show x
     Just "new_id" -> case findAttr (qname "interface") x of
@@ -410,7 +413,7 @@ argType intName x = case findAttr (qname "enum") x of
     Just "object" -> ConT ''ObjectID
     Just "array" -> ConT ''BS.ByteString
     Just "fd" -> ConT ''Fd
-    Just y -> error $ "unknown type: " <> y
+    Just y -> error $ "unknown type: " <> fromString y
 
 -- }}}
 
