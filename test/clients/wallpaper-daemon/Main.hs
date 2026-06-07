@@ -9,7 +9,7 @@ import Data.ByteString.Lazy hiding (singleton)
 import Data.Map qualified as Map
 import Data.Maybe (fromJust)
 import Network.Socket hiding (openSocket)
-import Protocol (InterfaceClientTable, InterfaceServerTable, VersionTable)
+import Protocol (InterfaceClientTable, VersionTable)
 import Relude hiding (ByteString, get, isPrefixOf, put)
 import Saywayland.Protocols.Wayland
 import Saywayland.Protocols.WlrLayerShell
@@ -60,7 +60,7 @@ program = do
     . void
     . forkIO
     $ finally
-      (putStrLn "\n--- Starting event loop ---" >> runReaderT (clientLoop Client env.socket) (ClientEnv env))
+      (putStrLn "\n--- Starting event loop ---" >> runReaderT (clientLoop env.socket) (ClientEnv env))
       (close env.socket >> putMVar running ())
 
   putStrLn "Binding to required interfaces..."
