@@ -6,8 +6,8 @@ module Saywayland (module Protocol, module Saywayland.Protocols.Wayland, module 
 
 import Protocol
 import Saywayland.Protocols.Wayland
-import Saywayland.Protocols.XdgShell
 import Saywayland.Protocols.WlrLayerShell
+import Saywayland.Protocols.XdgShell
 import Saywayland.Types
 import Saywayland.WaylandSocket
 import SaywaylandTH

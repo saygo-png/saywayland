@@ -511,6 +511,7 @@ instance Interface' WL_buffer Client where
     nodata' <- liftIO nodata
     sendMessage' request buffer.wlid (getOpcode request) $ runPut $ putEvent nodata' request
   runEvent buffer Event_wl_buffer_release = pure ()
+
 instance Interface' WL_buffer Server where
   type Event WL_buffer = Event_wl_buffer
   type Request WL_buffer = Request_wl_buffer

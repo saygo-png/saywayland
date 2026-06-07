@@ -59,9 +59,9 @@ library
   exposed-modules:
     Protocol
     Saywayland
-    Saywayland.Protocols.XdgShell
     Saywayland.Protocols.Wayland
     Saywayland.Protocols.WlrLayerShell
+    Saywayland.Protocols.XdgShell
     Saywayland.Types
     Saywayland.WaylandSocket
     SaywaylandTH
