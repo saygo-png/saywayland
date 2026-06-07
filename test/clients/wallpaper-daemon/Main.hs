@@ -51,10 +51,10 @@ program = do
   serial :: TMVar Word32 <- newEmptyTMVarIO
   running :: MVar () <- newEmptyMVar
 
-  display <- fromJust <$> getInterface' (Proxy @WL_display) 1
+  display <- fromJust <$> getInterface' @WL_display 1
   registryId <- newObjectId
   runRequest display $ Request_wl_display_get_registry registryId
-  registry <- fromJust <$> getInterface' (Proxy @WL_registry) registryId
+  registry <- fromJust <$> getInterface' @WL_registry registryId
 
   liftIO
     . void
@@ -65,13 +65,13 @@ program = do
 
   putStrLn "Binding to required interfaces..."
   wlShmId <- fromJust <$> bindToInterface registry "wl_shm"
-  wl_shm <- fromJust <$> getInterface' (Proxy @WL_shm) wlShmId
+  wl_shm <- fromJust <$> getInterface' @WL_shm wlShmId
 
   wlCompositorId <- fromJust <$> bindToInterface registry "wl_compositor"
-  wl_compositor <- fromJust <$> getInterface' (Proxy @WL_compositor) wlCompositorId
+  wl_compositor <- fromJust <$> getInterface' @WL_compositor wlCompositorId
 
   zwlrLayerShellV1Id <- fromJust <$> bindToInterface registry "zwlr_layer_shell_v1"
-  zwlr_layer_shell_V1 <- fromJust <$> getInterface' (Proxy @Zwlr_layer_shell_v1) zwlrLayerShellV1Id
+  zwlr_layer_shell_V1 <- fromJust <$> getInterface' @Zwlr_layer_shell_v1 zwlrLayerShellV1Id
 
   modifyIORef env.eventHandlers $ (:) $ EventHandler $ \case
     (Event_zwlr_layer_surface_v1_configure receivedSerial _ _) -> do
@@ -80,7 +80,7 @@ program = do
 
   wlSurfaceId <- newObjectId
   runRequest wl_compositor $ Request_wl_compositor_create_surface wlSurfaceId
-  surface <- fromJust <$> getInterface' (Proxy @WL_surface) wlSurfaceId
+  surface <- fromJust <$> getInterface' @WL_surface wlSurfaceId
 
   layerSurfaceId <- newObjectId
   runRequest zwlr_layer_shell_V1
@@ -92,7 +92,7 @@ program = do
       , namespace = "wallpaper"
       }
 
-  zwlrLayerSurfaceV1 <- fromJust <$> getInterface' (Proxy @Zwlr_layer_surface_v1) layerSurfaceId
+  zwlrLayerSurfaceV1 <- fromJust <$> getInterface' @Zwlr_layer_surface_v1 layerSurfaceId
   runRequest zwlrLayerSurfaceV1 $ Request_zwlr_layer_surface_v1_set_size{width = fromIntegral bufferWidth, height = fromIntegral bufferHeight}
   runRequest zwlrLayerSurfaceV1 $ Request_zwlr_layer_surface_v1_set_exclusive_zone{zone = -1}
 
@@ -106,7 +106,7 @@ program = do
           liftIO . setFdSize fileDescriptor $ fromIntegral frameSize
           wlShmPoolId <- newObjectId
           runRequest wl_shm $ Request_wl_shm_create_pool{id = wlShmPoolId, fd = fileDescriptor, size = frameSize}
-          wl_shm_pool <- fromJust <$> getInterface' (Proxy @WL_shm_pool) wlShmPoolId
+          wl_shm_pool <- fromJust <$> getInterface' @WL_shm_pool wlShmPoolId
           wlBufferId <- newObjectId
           runRequest wl_shm_pool
             $ Request_wl_shm_pool_create_buffer

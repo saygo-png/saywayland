@@ -506,9 +506,11 @@ instance Interface' WL_shm Server where
 instance Interface' WL_buffer Client where
   type Event WL_buffer = Event_wl_buffer
   type Request WL_buffer = Request_wl_buffer
-  runRequest buffer Request_wl_buffer_destroy{} = dropObject buffer.wlid
-  runEvent buffer Event_wl_buffer_release{} = pure ()
-
+  runRequest buffer request@Request_wl_buffer_destroy = do
+    dropObject buffer.wlid
+    nodata' <- liftIO nodata
+    sendMessage' request buffer.wlid (getOpcode request) $ runPut $ putEvent nodata' request
+  runEvent buffer Event_wl_buffer_release = pure ()
 instance Interface' WL_buffer Server where
   type Event WL_buffer = Event_wl_buffer
   type Request WL_buffer = Request_wl_buffer

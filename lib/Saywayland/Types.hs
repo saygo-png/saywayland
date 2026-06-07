@@ -226,18 +226,18 @@ getInterface objectID = do
   Map.lookup objectID <$> readIORef env.objects
 
 -- | getInterface chained with proxyInterface.
-getInterface' :: forall i p. (Typeable i) => Proxy i -> Word32 -> Wayland p (Maybe i)
-getInterface' p objectID = do
+getInterface' :: forall i p. (Typeable i) => Word32 -> Wayland p (Maybe i)
+getInterface' objectID = do
   ClientEnv env <- ask
-  (proxyInterface p <=< Map.lookup objectID) <$> readIORef env.objects
+  (proxyInterface <=< Map.lookup objectID) <$> readIORef env.objects
 
 -- | Round a byte length up to the nearest 4-byte boundary.
 roundLength :: Word32 -> Int64
 roundLength l = (fromIntegral l + 3) .&. (-4)
 
 -- | Cast provided interface into proxied type.
-proxyInterface :: forall i p. (Typeable i) => Proxy i -> Interface p -> Maybe i
-proxyInterface _ (Interface i) = cast i
+proxyInterface :: forall i p. (Typeable i) => Interface p -> Maybe i
+proxyInterface (Interface i) = cast i
 
 -- }}}
 

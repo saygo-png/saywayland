@@ -1,21 +1,24 @@
 module Main (main) where
 
+import Saywayland
+import Relude hiding (hFlush)
+import Data.Map qualified as Map
+import Data.Bimap qualified as BM
+import Data.Maybe (fromJust)
 import Control.Concurrent (forkIO)
 import Control.Exception (bracket, finally)
-import Data.Bimap qualified as BM
 import Data.ByteString (hPut, pack)
-import Data.Map qualified as Map
-import Data.Maybe (fromJust)
 import Network.Socket (Family (AF_UNIX), SockAddr (SockAddrUnix), SocketType (Stream), close, connect, defaultProtocol, socket)
-import Relude
 import Saywayland
 import System.Posix (ShmOpenFlags (ShmOpenFlags), fdToHandle, ownerReadMode, ownerWriteMode, setFdSize, shmOpen, shmUnlink, unionFileModes)
 
+import GHC.IO.Handle
+
 interfaceTable :: InterfaceClientTable
-interfaceTable = waylandInterfaceClientTable
+interfaceTable = waylandInterfaceClientTable <> xdg_shellInterfaceClientTable
 
 versionTable :: VersionTable
-versionTable = waylandVersionTable
+versionTable = waylandVersionTable <> xdg_shellVersionTable 
 
 main :: IO ()
 main = do
@@ -43,10 +46,10 @@ program = do
   serial :: TMVar Word32 <- newEmptyTMVarIO
   running :: MVar () <- newEmptyMVar
 
-  display <- fromJust <$> getInterface' (Proxy @WL_display) 1
+  display <- fromJust <$> getInterface' @WL_display 1
   registryId <- newObjectId
   runRequest display $ Request_wl_display_get_registry registryId
-  registry <- fromJust <$> getInterface' (Proxy @WL_registry) registryId
+  registry <- fromJust <$> getInterface' @WL_registry registryId
 
   liftIO
     . void
@@ -57,51 +60,99 @@ program = do
 
   putStrLn "Binding to required interfaces..."
   wlShmId <- fromJust <$> bindToInterface registry "wl_shm"
-  wl_shm <- fromJust <$> getInterface' (Proxy @WL_shm) wlShmId
+  wl_shm <- fromJust <$> getInterface' @WL_shm wlShmId
 
   wlCompositorId <- fromJust <$> bindToInterface registry "wl_compositor"
-  wl_compositor <- fromJust <$> getInterface' (Proxy @WL_compositor) wlCompositorId
+  wl_compositor <- fromJust <$> getInterface' @WL_compositor wlCompositorId
 
   wlSurfaceId <- newObjectId
   runRequest wl_compositor $ Request_wl_compositor_create_surface wlSurfaceId
-  surface <- fromJust <$> getInterface' (Proxy @WL_surface) wlSurfaceId
+  surface <- fromJust <$> getInterface' @WL_surface wlSurfaceId
 
-  let
-    makeSharedMemoryObject = shmOpen "wl_shm_pool" (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
-    useSharedMemoryObject fileDescriptor =
-      flip runReaderT (ClientEnv env) $ do
-        let frameSize = bufferWidth * bufferHeight * colorChannels
-        liftIO . setFdSize fileDescriptor $ fromIntegral frameSize
-        wlShmPoolId <- newObjectId
-        runRequest wl_shm $ Request_wl_shm_create_pool{id = wlShmPoolId, fd = fileDescriptor, size = frameSize}
-        wl_shm_pool <- fromJust <$> getInterface' (Proxy @WL_shm_pool) wlShmPoolId
-        wlBufferId <- newObjectId
-        runRequest wl_shm_pool
-          $ Request_wl_shm_pool_create_buffer
-            { id = wlBufferId
-            , offset = 0
-            , width = bufferWidth
-            , height = bufferHeight
-            , stride = bufferWidth * colorChannels
-            , format = Enum_wl_shm_format_argb8888
-            }
 
-        fileHandle <- liftIO $ fdToHandle fileDescriptor
+  xdgWmBaseId <- fromJust <$> bindToInterface registry "xdg_wm_base"
+  xdg_wm_base <- fromJust <$> getInterface' @XDG_wm_base xdgWmBaseId
 
-        liftIO $ hPut fileHandle image
-        runRequest surface Request_wl_surface_attach{buffer = wlBufferId, x = 0, y = 0}
-        runRequest surface Request_wl_surface_commit
+  xdgSurfaceId <- newObjectId
+  runRequest xdg_wm_base $ Request_xdg_wm_base_get_xdg_surface xdgSurfaceId wlSurfaceId
+  xdg_surface <- fromJust <$> getInterface' @XDG_surface xdgSurfaceId
 
-        -- Wait for exit
-        takeMVar running
+  xdgToplevelId <- newObjectId
+  runRequest xdg_surface $ Request_xdg_surface_get_toplevel xdgToplevelId
+
+
+  bufferWidth <- liftIO $ newIORef 512
+  bufferHeight <- liftIO $ newIORef 512
+  let colorChannels = 4
+  let 
+      makeSharedMemoryObject = shmOpen "wl_shm_pool" (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
+      useSharedMemoryObject fileDescriptor =
+        flip runReaderT (ClientEnv env) $ do
+          bw <- liftIO $ readIORef bufferWidth
+          bh <- liftIO $ readIORef bufferHeight
+          let frameSize = bw * bh * colorChannels
+          liftIO . setFdSize fileDescriptor $ fromIntegral frameSize
+          wlShmPoolId <- newObjectId
+          runRequest wl_shm $ Request_wl_shm_create_pool{id = wlShmPoolId, fd = fileDescriptor, size = frameSize}
+          wl_shm_pool <- fromJust <$> getInterface' @WL_shm_pool wlShmPoolId
+          wlBufferId <- newObjectId
+          runRequest wl_shm_pool
+            $ Request_wl_shm_pool_create_buffer
+              { id = wlBufferId
+              , offset = 0
+              , width = bw
+              , height = bh
+              , stride = bw * colorChannels
+              , format = Enum_wl_shm_format_argb8888
+              }
+          buffer <- fromJust <$> getInterface' @WL_buffer wlBufferId
+          fileHandle <- liftIO $ fdToHandle fileDescriptor
+
+          liftIO $ hPut fileHandle $ image bw bh
+          liftIO $ hFlush fileHandle
+          runRequest surface Request_wl_surface_attach{buffer = wlBufferId, x = 0, y = 0}
+          runRequest surface Request_wl_surface_commit
+          lastbuffer' <- newIORef buffer
+          modifyIORef env.eventHandlers $ (:) $ EventHandler $ \case
+            (Event_xdg_toplevel_configure width height _) -> when (width>0 && height > 0) $ do
+              bw <- liftIO $ readIORef bufferWidth
+              bh <- liftIO $ readIORef bufferHeight
+              let frameSize = bw * bh * colorChannels
+              let newSize = width*height*colorChannels
+              when (newSize > frameSize) $ do
+                liftIO $ setFdSize fileDescriptor $ fromIntegral newSize
+                runRequest wl_shm_pool Request_wl_shm_pool_resize{size=newSize}
+              liftIO $ hSeek fileHandle AbsoluteSeek 0
+              liftIO $ hPut fileHandle $ image width height
+              liftIO $ hFlush fileHandle
+              newBufferId <- newObjectId
+              print newBufferId
+              runRequest wl_shm_pool
+                $ Request_wl_shm_pool_create_buffer
+                  { id = newBufferId
+                  , offset = 0
+                  , width = width
+                  , height = height
+                  , stride = width * colorChannels
+                  , format = Enum_wl_shm_format_argb8888
+                  }
+              newbuffer <- fromJust <$> getInterface' @WL_buffer newBufferId
+              runRequest surface Request_wl_surface_attach{buffer = newBufferId, x = 0, y = 0}
+              runRequest surface Request_wl_surface_commit
+              lastbuffer <- readIORef lastbuffer'
+              runRequest lastbuffer Request_wl_buffer_destroy
+              writeIORef lastbuffer' newbuffer
+              liftIO $ writeIORef bufferWidth width
+              liftIO $ writeIORef bufferHeight height
+              --runRequest buffer Request_wl_buffer_destroy
+            _ -> pure ()
+          -- Wait for exit
+          takeMVar running
 
   liftIO . void $ bracket makeSharedMemoryObject (const $ shmUnlink "wl_shm_pool") useSharedMemoryObject
-
-  undefined
-
 -- | Rainbow image :D
-image :: ByteString
-image =
+image :: Int -> Int -> ByteString
+image bufferWidth bufferHeight =
   generateBGRA8 $ \x y ->
     let tx = fi x / fi @Int (fi bufferWidth - 1) :: Double
         ty = fi y / fi @Int (fi bufferHeight - 1) :: Double
@@ -122,9 +173,3 @@ image =
         , let (b, g, r, a) = pixelFn x y
         , byte <- [b, g, r, a]
         ]
-
-bufferWidth = 512
-
-bufferHeight = 512
-
-colorChannels = 4
