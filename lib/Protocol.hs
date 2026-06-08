@@ -20,6 +20,8 @@ import System.FilePath (takeExtension, (</>))
 import System.Posix (Fd)
 import Text.Show qualified
 import Text.XML.Light
+import Network.Socket (recvFd)
+import Control.Concurrent.STM (atomically, readTQueue)
 
 type VersionTable = [(String, Word32)]
 
@@ -85,11 +87,7 @@ putFixed24_8 d = putInt32le $ fromIntegral @Integer $ round $ d * 256
 
 -- | Get an Fd from previously obtained ancillary data
 getFd :: AdditionalParserData -> IO (Get Fd)
-getFd dat =
-  readIORef dat.fds >>= \case
-    -- todo: this edge case can be avoided, if instead of IORef, TQueue was used AND handleMessage was spawned asynchronously.
-    [] -> error "No file descriptor found in ancillary data!"
-    (fd : fds) -> writeIORef dat.fds fds $> pure fd
+getFd dat = pure <$> atomically (readTQueue dat.fdqueue)
 
 -- | Return a TH getter expression for a given Type.
 getForType :: Type -> Q Exp

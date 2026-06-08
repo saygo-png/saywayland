@@ -8,6 +8,7 @@ import Data.Bool (bool)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.Data (cast)
+import Data.Functor
 import Data.Map qualified as Map
 import Data.String (IsString (fromString))
 import Debug.Trace (traceIO)
@@ -16,7 +17,7 @@ import Foreign.C
 import GHC.IO (unsafePerformIO)
 import GHC.IORef (IORef (IORef))
 import Network.Socket
-import Network.Socket.ByteString (recvMsg)
+import Network.Socket.ByteString (recvMsg, recv)
 import Protocol
 import Relude (LazyStrict (toLazy), MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), Word16, Word32, forM_, for_, modifyIORef, newIORef, readIORef, traceShow)
 import Saywayland.Protocols.Wayland
@@ -27,6 +28,7 @@ import System.Environment.Blank (getEnv)
 import System.FilePath
 import System.Posix (Fd (Fd))
 import Prelude
+import Control.Concurrent.STM (writeTQueue, atomically, newTQueue)
 
 -- Listeners {{{
 
@@ -43,6 +45,7 @@ listenForClients = do
   objectsref <- liftIO $ newIORef $ Map.singleton 1 $ Interface WL_display{wlid = 1}
   globalsref <- liftIO $ newIORef BM.empty
   handlers <- newIORef []
+  fdQueue <- liftIO $ atomically newTQueue
   let intref = env.interfaceTable
   let verref = env.versionTable
   let clientenv =
@@ -55,6 +58,7 @@ listenForClients = do
             , globals = globalsref
             , interfaceTable = intref
             , versionTable = verref
+            , fdQueue
             }
   _ <- liftIO $ forkIO $ runReaderT (clientLoop sock) clientenv
   listenForClients
@@ -78,22 +82,23 @@ decodeFds bs =
 
 -- | handle communication between a server and a client in provided socket, works both on the server and the client.
 clientLoop :: Socket -> Wayland p ()
-clientLoop s = do
-  ref <- newIORef []
-  clientLoop' ref "" s
+clientLoop = clientLoop' ""
 
-clientLoop' :: IORef [Fd] -> BS.ByteString -> Socket -> Wayland p ()
-clientLoop' fds bytes' sock = do
+clientLoop' :: BS.ByteString -> Socket -> Wayland p ()
+clientLoop' bytes' sock = do
+  queue <- ask <&> \case
+    ClientServerEnv _ env -> env.fdQueue
+    ClientEnv env -> env.fdQueue
   (_, bytes'', cmsgs, _flags) <- liftIO $ recvMsg sock 8 4096 mempty
   let newFds = concatMap (decodeFds . cmsgData) $ filter (\x -> cmsgId x == CmsgIdFds) cmsgs
+  liftIO . atomically $ mapM_ (writeTQueue queue) newFds
   let bytes = bytes' <> bytes''
-  modifyIORef fds (<> newFds)
   bool
     ( case extractMessage bytes of
-        Just (oid, opcode, x, y) -> handleMessage oid fds opcode x >> clientLoop' fds y sock
+        Just (oid, opcode, x, y) -> handleMessage oid opcode x >> clientLoop' y sock
         Nothing -> undefined
     )
-    (clientLoop' fds bytes sock)
+    (clientLoop' bytes sock)
     (isPartial bytes)
 
 isPartial :: BS.ByteString -> Bool
@@ -109,48 +114,48 @@ extractMessage s = case runGetOrFail getHeader (BL.fromStrict s) of
       payload = fromIntegral $ size - headerSize
       rest = BS.toStrict rest'
 
-handleMessage :: ObjectID -> IORef [Fd] -> Word16 -> BS.ByteString -> Wayland p ()
-handleMessage oid fds opcode msg = do
+handleMessage :: ObjectID -> Word16 -> BS.ByteString -> Wayland p ()
+handleMessage oid opcode msg = do
   ask >>= \case
     ClientEnv env -> do
       objects <- readIORef env.objects
       case Map.lookup oid objects of
-        Just (Interface x) -> dispatchMessage x oid fds opcode msg
+        Just (Interface x) -> dispatchMessage x oid opcode msg
         Nothing -> error $ "invalid object reference with id: " <> show oid
     ClientServerEnv _ env -> do
       objects <- readIORef env.objects
       case Map.lookup oid objects of
-        Just (Interface x) -> dispatchMessage x oid fds opcode msg
+        Just (Interface x) -> dispatchMessage x oid opcode msg
         Nothing -> error $ "invalid object reference with id: " <> show oid
     ServerEnv _ -> undefined
 
 class Dispatch (p :: Perspective) where
-  dispatchMessage :: forall i. (Interface' i p) => i -> ObjectID -> IORef [Fd] -> Word16 -> BS.ByteString -> Wayland p ()
+  dispatchMessage :: forall i. (Interface' i p) => i -> ObjectID -> Word16 -> BS.ByteString -> Wayland p ()
 
 instance Dispatch Client where
-  dispatchMessage x oid fds opcode msg = do
-    getter <- liftIO $ getEvent opcode $ AdditionalParserData fds
+  dispatchMessage x oid opcode msg = do
+    ClientEnv env <- ask
+    getter <- liftIO $ getEvent opcode $ AdditionalParserData env.fdQueue
     case runGetOrFail getter (toLazy msg) of
       Left (_, _, err) -> fail err
       Right (_, _, event) -> do
         colorize <- liftIO getColorize
         liftIO . traceIO . colorize Vivid Magenta $ showEvent oid event
         runEvent x event
-        ClientEnv env <- ask
         handlers <- liftIO $ readIORef env.eventHandlers
         forM_ handlers $ \(EventHandler f) ->
           for_ (cast event) f
 
 instance Dispatch Server where
-  dispatchMessage x oid fds opcode msg = do
-    getter <- liftIO $ getEvent opcode $ AdditionalParserData fds
+  dispatchMessage x oid opcode msg = do
+    ClientServerEnv _ env <- ask
+    getter <- liftIO $ getEvent opcode $ AdditionalParserData env.fdQueue
     case runGetOrFail getter (toLazy msg) of
       Left (_, _, err) -> fail err
       Right (_, _, event) -> do
         colorize <- liftIO getColorize
         liftIO . traceIO . colorize Vivid Magenta $ showEvent oid event
         runRequest x event
-        ClientServerEnv _ env <- ask
         handlers <- liftIO $ readIORef env.eventHandlers
         forM_ handlers $ \(EventHandler f) ->
           for_ (cast event) f

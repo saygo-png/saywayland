@@ -11,6 +11,8 @@ import Network.Socket (Family (AF_UNIX), SockAddr (SockAddrUnix), SocketType (St
 import Relude hiding (hFlush)
 import Saywayland
 import System.Posix (ShmOpenFlags (ShmOpenFlags), fdToHandle, ownerReadMode, ownerWriteMode, setFdSize, shmOpen, shmUnlink, unionFileModes)
+import GHC.IO.Handle
+import Control.Concurrent.STM (newTQueue)
 
 interfaceTable :: InterfaceClientTable
 interfaceTable = waylandInterfaceClientTable <> xdg_shellInterfaceClientTable
@@ -35,7 +37,8 @@ main = do
           handlers <- newIORef mempty
           interfaceTable' <- newIORef $ Map.fromList interfaceTable
           versionTable' <- newIORef $ Map.fromList versionTable
-          pure $ ClientEnv $ ClientEnvironment sock counter objects globals interfaceTable' versionTable' handlers
+          q <- atomically newTQueue
+          pure $ ClientEnv $ ClientEnvironment sock counter objects globals interfaceTable' versionTable' handlers q
         Nothing -> error "couldn't find `$WAYLAND_DISPLAY`, nor any open socket."
 
 program :: Wayland Client ()
@@ -75,7 +78,7 @@ program = do
   xdg_surface <- fromJust <$> getInterface' @XDG_surface xdgSurfaceId
 
   xdgToplevelId <- newObjectId
-  runRequest xdg_surface $ Request_xdg_surface_get_toplevel xdgToplevelId
+  runRequest xdg_surface $ Request_xdg_surface_get_toplevel xdgToplevelId-}
 
   bufferWidth <- liftIO $ newIORef 512
   bufferHeight <- liftIO $ newIORef 512

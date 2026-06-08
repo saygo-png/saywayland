@@ -19,6 +19,7 @@ import Network.Socket.ByteString.Lazy (sendAll)
 import Relude hiding (ByteString, get, put)
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
 import System.Posix (Fd)
+import Control.Concurrent.STM (newTQueueIO, TQueue)
 
 -- Constants {{{
 
@@ -35,8 +36,8 @@ wlDisplayID :: Word32
 wlDisplayID = 1
 
 -- | predefined empty AdditionalParserData
-nodata :: IO AdditionalParserData
-nodata = newIORef [] <&> AdditionalParserData
+--nodata :: IO AdditionalParserData
+--nodata = newIORef [] <&> AdditionalParserData
 
 -- }}}
 
@@ -90,6 +91,7 @@ data ClientEnvironment (p :: Perspective) = ClientEnvironment
   , interfaceTable :: IORef (Map String (IO (Interface p)))
   , versionTable :: IORef (Map String Word32)
   , eventHandlers :: IORef [EventHandler p]
+  , fdQueue :: TQueue Fd
   }
 
 class
@@ -118,7 +120,7 @@ class (Typeable e) => WaylandEvent e where
 
 -- | Additional data passed to the TemplateHaskell-generated `getEvent`.
 data AdditionalParserData = AdditionalParserData
-  { fds :: IORef [Fd]
+  { fdqueue :: TQueue Fd
   }
 
 -- | The Wayland monad. Allows easy access to the Wayland environment state without threading repetitive arguments.
@@ -174,18 +176,28 @@ sendMessage objectID opcode messageBody =
 {- | Convenience function for formatting events, before sending them.
 Events are colored in magenta following the wayland.app colorscheme.
 -}
-sendMessage' :: (WaylandEvent e) => e -> Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
-sendMessage' e o op body = do
+sendMessage' :: (WaylandEvent e) => e -> Word32 -> Word16 -> Wayland p ()
+sendMessage' e o op = do
   colorize <- liftIO getColorize
   liftIO (traceIO $ colorize Vivid Magenta $ showEvent o e)
-  sendMessage o op body
+  q <- ask <&> \case
+    ClientEnv env -> env.fdQueue
+    ClientServerEnv _ env -> env.fdQueue
+    _ -> undefined
+  let dat = AdditionalParserData q
+  sendMessage o op $ runPut $ putEvent dat e
 
 -- | sendMessageWithFds, but with sendMessage' aspect.
-sendMessageWithFds' :: (WaylandEvent e) => e -> [Fd] -> Word32 -> Word16 -> BSL.ByteString -> Wayland p ()
-sendMessageWithFds' e fd o op body = do
+sendMessageWithFds' :: (WaylandEvent e) => e -> [Fd] -> Word32 -> Word16 -> Wayland p ()
+sendMessageWithFds' e fd o op = do
   colorize <- liftIO getColorize
   liftIO (traceIO $ colorize Vivid Magenta $ showEvent o e)
-  sendMessageWithFds fd o op body
+  q <- ask <&> \case
+    ClientEnv env -> env.fdQueue
+    ClientServerEnv _ env -> env.fdQueue
+    _ -> undefined
+  let dat = AdditionalParserData q
+  sendMessageWithFds fd o op $ runPut $ putEvent dat e
 
 {- | Convenience function for formatting a Wayland message.
 It takes an objectID, operation code and a message body.

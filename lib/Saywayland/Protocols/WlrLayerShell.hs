@@ -38,8 +38,7 @@ instance Interface' Zwlr_layer_shell_v1 Client where
   runEvent shell _ = undefined
   runRequest shell request@Request_zwlr_layer_shell_v1_get_layer_surface{id = layerSurfaceId, surface = surfaceId, output = outputId, layer, namespace} = do
     ClientEnv env <- ask
-    nodata' <- liftIO nodata
-    sendMessage' request shell.wlid (getOpcode request) $ runPut $ putEvent nodata' request
+    sendMessage' request shell.wlid (getOpcode request)
     modifyIORef env.objects $ Map.insert layerSurfaceId $ Interface Zwlr_layer_surface_v1{wlid = layerSurfaceId}
   runRequest shell Request_zwlr_layer_shell_v1_destroy = undefined
 
@@ -53,17 +52,13 @@ instance Interface' Zwlr_layer_surface_v1 Client where
   runEvent ls Event_zwlr_layer_surface_v1_closed = undefined
   runEvent ls Event_zwlr_layer_surface_v1_configure{} = pure ()
   runRequest ls request@Request_zwlr_layer_surface_v1_ack_configure{serial} = do
-    nodata' <- liftIO nodata
-    sendMessage' request ls.wlid (getOpcode request) $ runPut $ putEvent nodata' request
+    sendMessage' request ls.wlid (getOpcode request)
   runRequest ls request@Request_zwlr_layer_surface_v1_set_anchor{anchor} = do
-    nodata' <- liftIO nodata
-    sendMessage' request ls.wlid (getOpcode request) $ runPut $ putEvent nodata' request
+    sendMessage' request ls.wlid (getOpcode request)
   runRequest ls request@Request_zwlr_layer_surface_v1_set_exclusive_zone{zone} = do
-    nodata' <- liftIO nodata
-    sendMessage' request ls.wlid (getOpcode request) $ runPut $ putEvent nodata' request
+    sendMessage' request ls.wlid (getOpcode request)
   runRequest ls request@Request_zwlr_layer_surface_v1_set_size{width, height} = do
-    nodata' <- liftIO nodata
-    sendMessage' request ls.wlid (getOpcode request) $ runPut $ putEvent nodata' request
+    sendMessage' request ls.wlid (getOpcode request)
   runRequest ls Request_zwlr_layer_surface_v1_destroy{} = undefined
   runRequest ls Request_zwlr_layer_surface_v1_get_popup{} = undefined
   runRequest ls Request_zwlr_layer_surface_v1_set_keyboard_interactivity{} = undefined

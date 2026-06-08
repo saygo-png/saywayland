@@ -63,25 +63,21 @@ instance Interface' XDG_wm_base Client where
   runRequest wm_base request@Request_xdg_wm_base_destroy = do
     ClientEnv env <- ask
     modifyIORef env.objects $ Map.delete wm_base.wlid
-    nodata' <- liftIO nodata
-    sendMessage' request wm_base.wlid (getOpcode request) $ runPut $ putEvent nodata' request
-  runRequest wm_base request@Request_xdg_wm_base_create_positioner{id = positionerId} = do
-    _positionerObject <- newObject positionerId XDG_positioner{wlid = positionerId}
-    nodata' <- liftIO nodata
-    sendMessage' request wm_base.wlid (getOpcode request) $ runPut $ putEvent nodata' request
-  runRequest wm_base request@Request_xdg_wm_base_get_xdg_surface{id = xdgSurfaceId, surface = surfaceId} = do
+    sendMessage' request wm_base.wlid (getOpcode request)
+  runRequest wm_base request@Request_xdg_wm_base_create_positioner{id=positionerId} = do
+    _positionerObject <- newObject positionerId XDG_positioner{wlid=positionerId}
+    sendMessage' request wm_base.wlid (getOpcode request)
+  runRequest wm_base request@Request_xdg_wm_base_get_xdg_surface{id=xdgSurfaceId, surface=surfaceId} = do
     getInterface' @WL_surface surfaceId >>= \case
       Just _ -> do
         -- TODO there are 3 checks to be made beforehand.
         ref <- newIORef Nothing
-        _surfaceObject <- newObject xdgSurfaceId XDG_surface{wlid = xdgSurfaceId, role = ref}
-        nodata' <- liftIO nodata
-        sendMessage' request wm_base.wlid (getOpcode request) $ runPut $ putEvent nodata' request
+        _surfaceObject <- newObject xdgSurfaceId XDG_surface{wlid=xdgSurfaceId, role = ref}
+        sendMessage' request wm_base.wlid (getOpcode request)
       Nothing -> do
         error "get_xdg_surface called on a non-surface object."
   runRequest wm_base request@Request_xdg_wm_base_pong{} = do
-    nodata' <- liftIO nodata
-    sendMessage' request wm_base.wlid (getOpcode request) $ runPut $ putEvent nodata' request
+    sendMessage' request wm_base.wlid (getOpcode request)
   runEvent wm_base Event_xdg_wm_base_ping{serial} = runRequest wm_base Request_xdg_wm_base_pong{serial}
 
 instance Interface' XDG_wm_base Server where
@@ -118,20 +114,17 @@ instance Interface' XDG_surface Client where
       delete = do
         ClientEnv env <- ask
         modifyIORef env.objects $ Map.delete xdg_surface.wlid
-        sendMessage' request xdg_surface.wlid (getOpcode request) ""
-  runRequest xdg_surface request@Request_xdg_surface_get_toplevel{id = toplevelId} = do
-    toplevelObject <- newObject toplevelId XDG_toplevel{wlid = toplevelId}
+        sendMessage' request xdg_surface.wlid (getOpcode request)
+  runRequest xdg_surface request@Request_xdg_surface_get_toplevel{id=toplevelId} = do
+    toplevelObject <- newObject toplevelId XDG_toplevel{wlid=toplevelId}
     writeIORef xdg_surface.role $ Just $ XDGToplevel toplevelObject
-    nodata' <- liftIO nodata
-    sendMessage' request xdg_surface.wlid (getOpcode request) $ runPut $ putEvent nodata' request
-  runRequest xdg_surface request@Request_xdg_surface_get_popup{id = popupId} = do
-    popupObject <- newObject popupId XDG_popup{wlid = popupId}
+    sendMessage' request xdg_surface.wlid (getOpcode request)
+  runRequest xdg_surface request@Request_xdg_surface_get_popup{id=popupId} = do
+    popupObject <- newObject popupId XDG_popup{wlid=popupId}
     writeIORef xdg_surface.role $ Just $ XDGPopup popupObject
-    nodata' <- liftIO nodata
-    sendMessage' request xdg_surface.wlid (getOpcode request) $ runPut $ putEvent nodata' request
+    sendMessage' request xdg_surface.wlid (getOpcode request)
   runRequest xdg_surface request@Request_xdg_surface_ack_configure{} = do
-    nodata' <- liftIO nodata
-    sendMessage' request xdg_surface.wlid (getOpcode request) $ runPut $ putEvent nodata' request
+    sendMessage' request xdg_surface.wlid (getOpcode request)
   runRequest _ _ = undefined
   runEvent _ _ = pure ()
 

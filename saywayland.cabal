@@ -51,6 +51,7 @@ library
     , network
     , relude
     , shared-memory
+    , stm
     , template-haskell
     , unix
     , xml
@@ -94,6 +95,7 @@ test-suite client-basic-window
     , network
     , relude
     , saywayland
+    , stm
     , unix
 
 test-suite server-basic-compositor
