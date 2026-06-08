@@ -121,12 +121,12 @@ handleMessage oid opcode msg = do
       objects <- readIORef env.objects
       case Map.lookup oid objects of
         Just (Interface x) -> dispatchMessage x oid opcode msg
-        Nothing -> error $ "invalid object reference with id: " <> show oid
+        Nothing -> traceIO $ "invalid object reference with id: " <> show oid
     ClientServerEnv _ env -> do
       objects <- readIORef env.objects
       case Map.lookup oid objects of
         Just (Interface x) -> dispatchMessage x oid opcode msg
-        Nothing -> error $ "invalid object reference with id: " <> show oid
+        Nothing -> traceIO $ "invalid object reference with id: " <> show oid
     ServerEnv _ -> undefined
 
 class Dispatch (p :: Perspective) where
