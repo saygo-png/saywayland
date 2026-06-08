@@ -78,7 +78,7 @@ program = do
   xdg_surface <- fromJust <$> getInterface' @XDG_surface xdgSurfaceId
 
   xdgToplevelId <- newObjectId
-  runRequest xdg_surface $ Request_xdg_surface_get_toplevel xdgToplevelId-}
+  runRequest xdg_surface $ Request_xdg_surface_get_toplevel xdgToplevelId
 
   bufferWidth <- liftIO $ newIORef 512
   bufferHeight <- liftIO $ newIORef 512
