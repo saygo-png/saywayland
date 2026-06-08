@@ -41,6 +41,7 @@ library
   import:          common-options
   build-depends:
     , ansi-terminal
+    , async
     , bimap
     , binary
     , bytestring

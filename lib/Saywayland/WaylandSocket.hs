@@ -3,23 +3,17 @@ module Saywayland.WaylandSocket (module Saywayland.WaylandSocket) where
 import Control.Concurrent (forkIO)
 import Data.Bimap qualified as BM
 import Data.Binary.Get
-import Data.Binary.Put (putWord16le, runPut)
-import Data.Bool (bool)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.Data (cast)
-import Data.Functor
 import Data.Map qualified as Map
-import Data.String (IsString (fromString))
 import Debug.Trace (traceIO)
 import Foreign (Storable (peek, sizeOf), castPtr)
 import Foreign.C
 import GHC.IO (unsafePerformIO)
-import GHC.IORef (IORef (IORef))
 import Network.Socket
-import Network.Socket.ByteString (recvMsg, recv)
-import Protocol
-import Relude (LazyStrict (toLazy), MonadIO (liftIO), MonadReader (ask), ReaderT (runReaderT), Word16, Word32, forM_, for_, modifyIORef, newIORef, readIORef, traceShow)
+import Network.Socket.ByteString (recvMsg)
+import Relude
 import Saywayland.Protocols.Wayland
 import Saywayland.Types
 import System.Console.ANSI (Color (Magenta), ColorIntensity (Vivid))
@@ -27,8 +21,8 @@ import System.Directory (doesFileExist)
 import System.Environment.Blank (getEnv)
 import System.FilePath
 import System.Posix (Fd (Fd))
-import Prelude
-import Control.Concurrent.STM (writeTQueue, atomically, newTQueue)
+import Control.Concurrent.STM (writeTQueue, newTQueue)
+import Control.Concurrent.Async (async)
 
 -- Listeners {{{
 
@@ -95,19 +89,21 @@ clientLoop' bytes' sock = do
   let bytes = bytes' <> bytes''
   bool
     ( case extractMessage bytes of
-        Just (oid, opcode, x, y) -> handleMessage oid opcode x >> clientLoop' y sock
+        Just (oid, opcode, x, y) -> do
+          ask >>= liftIO . async . runReaderT (handleMessage oid opcode x)
+          clientLoop' y sock
         Nothing -> undefined
     )
     (clientLoop' bytes sock)
     (isPartial bytes)
 
 isPartial :: BS.ByteString -> Bool
-isPartial s = case runGetOrFail getHeader (BL.fromStrict s) of
+isPartial s = case runGetOrFail getHeader (fromStrict s) of
   Left (_, _, _) -> True
   Right (rest, _, (_, _, size)) -> fromIntegral (size - headerSize) > BL.length rest
 
 extractMessage :: BS.ByteString -> Maybe (Word32, Word16, BS.ByteString, BS.ByteString)
-extractMessage s = case runGetOrFail getHeader (BL.fromStrict s) of
+extractMessage s = case runGetOrFail getHeader (fromStrict s) of
   Left (_, _, _) -> Nothing
   Right (rest', _, (oid, opcode, size)) -> Just (oid, opcode, BS.take payload rest, BS.drop payload rest)
     where
@@ -121,12 +117,12 @@ handleMessage oid opcode msg = do
       objects <- readIORef env.objects
       case Map.lookup oid objects of
         Just (Interface x) -> dispatchMessage x oid opcode msg
-        Nothing -> traceIO $ "invalid object reference with id: " <> show oid
+        Nothing -> liftIO $ traceIO $ "invalid object reference with id: " <> show oid
     ClientServerEnv _ env -> do
       objects <- readIORef env.objects
       case Map.lookup oid objects of
         Just (Interface x) -> dispatchMessage x oid opcode msg
-        Nothing -> traceIO $ "invalid object reference with id: " <> show oid
+        Nothing -> liftIO $ traceIO $ "invalid object reference with id: " <> show oid
     ServerEnv _ -> undefined
 
 class Dispatch (p :: Perspective) where

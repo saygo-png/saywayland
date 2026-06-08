@@ -21,7 +21,7 @@ import System.Posix (Fd)
 import Text.Show qualified
 import Text.XML.Light
 import Network.Socket (recvFd)
-import Control.Concurrent.STM (atomically, readTQueue)
+import Control.Concurrent.STM (readTQueue)
 
 type VersionTable = [(String, Word32)]
 
