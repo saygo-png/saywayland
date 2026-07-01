@@ -32,9 +32,13 @@ listenForClients = do
   ServerEnv env <- ask
 
   (sock, _) <- liftIO $ accept env.socket
-
   liftIO $ traceIO "New client connected."
+  handleIncomingClient sock
+  listenForClients
 
+handleIncomingClient :: Socket -> Wayland Server ()
+handleIncomingClient sock = do
+  ServerEnv env <- ask
   serial <- liftIO $ newIORef 0
   objectsref <- liftIO $ newIORef $ Map.singleton 1 $ Interface WL_display{wlid = 1}
   globalsref <- liftIO $ newIORef BM.empty
@@ -54,8 +58,7 @@ listenForClients = do
             , versionTable = verref
             , fdQueue
             }
-  _ <- liftIO $ forkIO $ runReaderT (clientLoop sock) clientenv
-  listenForClients
+  void . liftIO . async $ runReaderT (clientLoop sock) clientenv
 
 getHeader :: Get (Word32, Word16, Word16)
 getHeader = (,,) <$> getWord32le <*> getWord16le <*> getWord16le
@@ -83,6 +86,7 @@ clientLoop' bytes' sock = do
   queue <- ask <&> \case
     ClientServerEnv _ env -> env.fdQueue
     ClientEnv env -> env.fdQueue
+    ServerEnv _ -> undefined
   (_, bytes'', cmsgs, _flags) <- liftIO $ recvMsg sock 8 4096 mempty
   let newFds = concatMap (decodeFds . cmsgData) $ filter (\x -> cmsgId x == CmsgIdFds) cmsgs
   liftIO . atomically $ mapM_ (writeTQueue queue) newFds
@@ -90,7 +94,7 @@ clientLoop' bytes' sock = do
   bool
     ( case extractMessage bytes of
         Just (oid, opcode, x, y) -> do
-          ask >>= liftIO . async . runReaderT (handleMessage oid opcode x)
+          void $ ask >>= liftIO . async . runReaderT (handleMessage oid opcode x)
           clientLoop' y sock
         Nothing -> undefined
     )
@@ -100,14 +104,14 @@ clientLoop' bytes' sock = do
 isPartial :: BS.ByteString -> Bool
 isPartial s = case runGetOrFail getHeader (fromStrict s) of
   Left (_, _, _) -> True
-  Right (rest, _, (_, _, size)) -> fromIntegral (size - headerSize) > BL.length rest
+  Right (rest, _, (_, _, size')) -> fromIntegral (size' - headerSize) > BL.length rest
 
 extractMessage :: BS.ByteString -> Maybe (Word32, Word16, BS.ByteString, BS.ByteString)
 extractMessage s = case runGetOrFail getHeader (fromStrict s) of
   Left (_, _, _) -> Nothing
-  Right (rest', _, (oid, opcode, size)) -> Just (oid, opcode, BS.take payload rest, BS.drop payload rest)
+  Right (rest', _, (oid, opcode, size')) -> Just (oid, opcode, BS.take payload rest, BS.drop payload rest)
     where
-      payload = fromIntegral $ size - headerSize
+      payload = fromIntegral $ size' - headerSize
       rest = BS.toStrict rest'
 
 handleMessage :: ObjectID -> Word16 -> BS.ByteString -> Wayland p ()
