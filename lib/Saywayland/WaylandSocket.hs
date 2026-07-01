@@ -1,6 +1,5 @@
 module Saywayland.WaylandSocket (module Saywayland.WaylandSocket) where
 
-import Control.Concurrent (forkIO)
 import Data.Bimap qualified as BM
 import Data.Binary.Get
 import Data.ByteString qualified as BS
@@ -27,20 +26,17 @@ import Control.Concurrent.Async (async)
 -- Listeners {{{
 
 -- | listen for client connections in provided socket.
-listenForClients :: Wayland Server ()
-listenForClients = do
-  ServerEnv env <- ask
-
+listenForClients :: MonadIO m => ServerEnvironment -> m ()
+listenForClients env = do
   (sock, _) <- liftIO $ accept env.socket
   liftIO $ traceIO "New client connected."
-  handleIncomingClient sock
-  listenForClients
+  handleIncomingClient env sock
+  listenForClients env
 
-handleIncomingClient :: Socket -> Wayland Server ()
-handleIncomingClient sock = do
-  ServerEnv env <- ask
+handleIncomingClient :: MonadIO m => ServerEnvironment -> Socket -> m ()
+handleIncomingClient env sock = do
   serial <- liftIO $ newIORef 0
-  objectsref <- liftIO $ newIORef $ Map.singleton 1 $ Interface WL_display{wlid = 1}
+  objectsref <- liftIO $ newIORef $ one (1, Interface WL_display{wlid = 1})
   globalsref <- liftIO $ newIORef BM.empty
   handlers <- newIORef []
   fdQueue <- liftIO $ atomically newTQueue
@@ -86,7 +82,6 @@ clientLoop' bytes' sock = do
   queue <- ask <&> \case
     ClientServerEnv _ env -> env.fdQueue
     ClientEnv env -> env.fdQueue
-    ServerEnv _ -> undefined
   (_, bytes'', cmsgs, _flags) <- liftIO $ recvMsg sock 8 4096 mempty
   let newFds = concatMap (decodeFds . cmsgData) $ filter (\x -> cmsgId x == CmsgIdFds) cmsgs
   liftIO . atomically $ mapM_ (writeTQueue queue) newFds
@@ -96,7 +91,7 @@ clientLoop' bytes' sock = do
         Just (oid, opcode, x, y) -> do
           void $ ask >>= liftIO . async . runReaderT (handleMessage oid opcode x)
           clientLoop' y sock
-        Nothing -> undefined
+        Nothing -> error "impossible/undefined edge case"
     )
     (clientLoop' bytes sock)
     (isPartial bytes)
@@ -127,7 +122,6 @@ handleMessage oid opcode msg = do
       case Map.lookup oid objects of
         Just (Interface x) -> dispatchMessage x oid opcode msg
         Nothing -> liftIO $ traceIO $ "invalid object reference with id: " <> show oid
-    ServerEnv _ -> undefined
 
 class Dispatch (p :: Perspective) where
   dispatchMessage :: forall i. (Interface' i p) => i -> ObjectID -> Word16 -> BS.ByteString -> Wayland p ()

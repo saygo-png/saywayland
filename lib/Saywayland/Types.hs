@@ -1,6 +1,5 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE TypeFamilies #-}
-
 module Saywayland.Types where
 
 import Control.Lens (Lens')
@@ -19,7 +18,7 @@ import Network.Socket.ByteString.Lazy (sendAll)
 import Relude hiding (ByteString, get, put)
 import System.Console.ANSI (Color (..), ColorIntensity (..), ConsoleLayer (..), SGR (..), hNowSupportsANSI, setSGRCode)
 import System.Posix (Fd)
-import Control.Concurrent.STM (newTQueueIO, TQueue)
+import Control.Concurrent.STM (TQueue)
 
 -- Constants {{{
 
@@ -69,7 +68,6 @@ type role WaylandEnv nominal
 data WaylandEnv (p :: Perspective) where
   ClientEnv :: ClientEnvironment Client -> WaylandEnv 'Client
   ClientServerEnv :: ServerEnvironment -> ClientEnvironment Server -> WaylandEnv 'Server
-  ServerEnv :: ServerEnvironment -> WaylandEnv 'Server
 
 data ServerEnvironment = ServerEnvironment
   { socket :: Socket
@@ -119,7 +117,7 @@ class (Typeable e) => WaylandEvent e where
   showEvent :: ObjectID -> e -> String
 
 -- | Additional data passed to the TemplateHaskell-generated `getEvent`.
-data AdditionalParserData = AdditionalParserData
+newtype AdditionalParserData = AdditionalParserData
   { fdqueue :: TQueue Fd
   }
 
@@ -143,14 +141,12 @@ newObject intId int =
   ask >>= \case
     ClientEnv env -> liftIO (modifyIORef env.objects (Map.insert intId $ Interface int)) $> int
     ClientServerEnv _ env -> liftIO (modifyIORef env.objects (Map.insert intId $ Interface int)) $> int
-    _ -> undefined
 
 dropObject :: Word32 -> Wayland p ()
 dropObject i =
   ask >>= \case
     ClientEnv env -> modifyIORef env.objects $ Map.delete i
     ClientServerEnv _ env -> modifyIORef env.objects $ Map.delete i
-    _ -> undefined
 
 {- | Convenience function for sending a Wayland message.
 See 'mkMessage'.
@@ -160,7 +156,6 @@ sendMessageWithFds fds objectID opcode messageBody =
   ask >>= \case
     ClientEnv env -> liftIO $ sendManyWithFds env.socket msg fds
     ClientServerEnv _ env -> liftIO $ sendManyWithFds env.socket msg fds
-    _ -> undefined
   where
     msg = [BS.toStrict $ mkMessage objectID opcode messageBody]
 
@@ -169,7 +164,6 @@ sendMessage objectID opcode messageBody =
   ask >>= \case
     ClientEnv env -> liftIO . sendAll env.socket $ msg
     ClientServerEnv _ env -> liftIO . sendAll env.socket $ msg
-    _ -> undefined
   where
     msg = mkMessage objectID opcode messageBody
 
@@ -183,7 +177,6 @@ sendMessage' e o op = do
   q <- ask <&> \case
     ClientEnv env -> env.fdQueue
     ClientServerEnv _ env -> env.fdQueue
-    _ -> undefined
   let dat = AdditionalParserData q
   sendMessage o op $ runPut $ putEvent dat e
 
@@ -195,7 +188,6 @@ sendMessageWithFds' e fd o op = do
   q <- ask <&> \case
     ClientEnv env -> env.fdQueue
     ClientServerEnv _ env -> env.fdQueue
-    _ -> undefined
   let dat = AdditionalParserData q
   sendMessageWithFds fd o op $ runPut $ putEvent dat e
 
@@ -229,7 +221,6 @@ interfaceFromName n =
     ClientServerEnv _ env -> do
       glob <- readIORef env.globals
       pure $ BM.lookupR n glob
-    _ -> undefined
 
 -- | get an Interface from objects table using its Id.
 getInterface :: Word32 -> Wayland p (Maybe (Interface p))
