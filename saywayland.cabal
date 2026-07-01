@@ -83,6 +83,7 @@ test-suite client-wallpaper-daemon
     , relude
     , saywayland
     , unix
+    , stm
 
 test-suite client-basic-window
   import:         common-options, executable-options

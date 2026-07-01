@@ -282,7 +282,7 @@ instance Interface' WL_callback Client where
     putMVar callback.done ()
     modifyIORef env.objects (Map.delete callback.wlid)
 
-  runRequest _ _ = pure ()
+  runRequest _ _ = pass
 
 instance Interface' WL_callback Server where
   type Event WL_callback = Event_wl_callback
@@ -291,7 +291,7 @@ instance Interface' WL_callback Server where
     putMVar callback.done ()
     dropObject callback.wlid
     sendMessage' event callback.wlid (getOpcode event)
-  runRequest _ _ = pure ()
+  runRequest _ _ = pass
 
 -- }}}
 
@@ -310,7 +310,7 @@ instance Interface' WL_registry Client where
         when (clientVer > version)
           $ modifyIORef env.versionTable
           $ Map.insert (BS8.unpack interface') version
-      Nothing -> pure ()
+      Nothing -> pass
   runEvent registry Event_wl_registry_global_remove{name} = do
     ClientEnv env <- ask
     modifyIORef env.globals $ BM.deleteR name
@@ -365,18 +365,18 @@ instance Interface' WL_compositor Client where
     sendMessage' request compositor.wlid (getOpcode request)
   runRequest compositor request@Request_wl_compositor_release = do
     sendMessage' request compositor.wlid (getOpcode request)
-  runEvent _ _ = pure ()
+  runEvent _ _ = pass
 
 instance Interface' WL_compositor Server where
   type Event WL_compositor = Event_wl_compositor
   type Request WL_compositor = Request_wl_compositor
-  runEvent _ _ = pure ()
+  runEvent _ _ = pass
   runRequest _compositor Request_wl_compositor_create_surface{id = surfaceId} = do
     pending <- newIORef emptySurfaceState
     active <- newIORef emptySurfaceState
     queue <- newIORef []
     _ <- newObject surfaceId WL_surface{wlid = surfaceId, pendingState = pending, activeState = active, cuQueue = queue}
-    pure ()
+    pass
   runRequest _compositor Request_wl_compositor_create_region{id = regionId} = void $ newObject regionId WL_region{wlid = regionId}
   runRequest compositor Request_wl_compositor_release = dropObject compositor.wlid
 
@@ -400,7 +400,7 @@ instance Interface' WL_shm_pool Client where
     writeIORef shm_pool.size size'
     sendMessage' request shm_pool.wlid (getOpcode request)
 
-  runEvent _ _ = pure ()
+  runEvent _ _ = pass
 
 instance Interface' WL_shm_pool Server where
   type Event WL_shm_pool = Event_wl_shm_pool
@@ -433,7 +433,7 @@ instance Interface' WL_shm_pool Server where
       Right ptr' -> liftIO (traceIO $ "mmap OK, ptr = " ++ show ptr') $> ptr'
     writeIORef shm_pool.ptr ptr'
     writeIORef shm_pool.size size'
-  runEvent _ _ = pure ()
+  runEvent _ _ = pass
 
 -- }}}
 
@@ -490,7 +490,7 @@ instance Interface' WL_buffer Client where
   runRequest buffer request@Request_wl_buffer_destroy = do
     dropObject buffer.wlid
     sendMessage' request buffer.wlid (getOpcode request)
-  runEvent buffer Event_wl_buffer_release = pure ()
+  runEvent buffer Event_wl_buffer_release = pass
 
 instance Interface' WL_buffer Server where
   type Event WL_buffer = Event_wl_buffer
@@ -505,14 +505,14 @@ instance Interface' WL_buffer Server where
 instance Interface' WL_data_offer Client where
   type Event WL_data_offer = Event_wl_data_offer
   type Request WL_data_offer = Request_wl_data_offer
-  runRequest _ Request_wl_data_offer_accept{} = pure ()
-  runRequest _ Request_wl_data_offer_receive{} = pure ()
-  runRequest _ Request_wl_data_offer_destroy{} = pure ()
-  runRequest _ Request_wl_data_offer_finish{} = pure ()
-  runRequest _ Request_wl_data_offer_set_actions{} = pure ()
-  runEvent _ Event_wl_data_offer_offer{} = pure ()
-  runEvent _ Event_wl_data_offer_source_actions{} = pure ()
-  runEvent _ Event_wl_data_offer_action{} = pure ()
+  runRequest _ Request_wl_data_offer_accept{} = pass
+  runRequest _ Request_wl_data_offer_receive{} = pass
+  runRequest _ Request_wl_data_offer_destroy{} = pass
+  runRequest _ Request_wl_data_offer_finish{} = pass
+  runRequest _ Request_wl_data_offer_set_actions{} = pass
+  runEvent _ Event_wl_data_offer_offer{} = pass
+  runEvent _ Event_wl_data_offer_source_actions{} = pass
+  runEvent _ Event_wl_data_offer_action{} = pass
 
 instance Interface' WL_data_offer Server
 
@@ -522,15 +522,15 @@ instance Interface' WL_data_offer Server
 instance Interface' WL_data_source Client where
   type Event WL_data_source = Event_wl_data_source
   type Request WL_data_source = Request_wl_data_source
-  runRequest _ Request_wl_data_source_offer{} = pure ()
-  runRequest _ Request_wl_data_source_destroy{} = pure ()
-  runRequest _ Request_wl_data_source_set_actions{} = pure ()
-  runEvent _ Event_wl_data_source_target{} = pure ()
-  runEvent _ Event_wl_data_source_send{} = pure ()
-  runEvent _ Event_wl_data_source_cancelled{} = pure ()
-  runEvent _ Event_wl_data_source_dnd_drop_performed{} = pure ()
-  runEvent _ Event_wl_data_source_dnd_finished{} = pure ()
-  runEvent _ Event_wl_data_source_action{} = pure ()
+  runRequest _ Request_wl_data_source_offer{} = pass
+  runRequest _ Request_wl_data_source_destroy{} = pass
+  runRequest _ Request_wl_data_source_set_actions{} = pass
+  runEvent _ Event_wl_data_source_target{} = pass
+  runEvent _ Event_wl_data_source_send{} = pass
+  runEvent _ Event_wl_data_source_cancelled{} = pass
+  runEvent _ Event_wl_data_source_dnd_drop_performed{} = pass
+  runEvent _ Event_wl_data_source_dnd_finished{} = pass
+  runEvent _ Event_wl_data_source_action{} = pass
 
 instance Interface' WL_data_source Server
 
@@ -540,15 +540,15 @@ instance Interface' WL_data_source Server
 instance Interface' WL_data_device Client where
   type Event WL_data_device = Event_wl_data_device
   type Request WL_data_device = Request_wl_data_device
-  runRequest _ Request_wl_data_device_start_drag{} = pure ()
-  runRequest _ Request_wl_data_device_set_selection{} = pure ()
-  runRequest _ Request_wl_data_device_release{} = pure ()
-  runEvent _ Event_wl_data_device_data_offer{} = pure ()
-  runEvent _ Event_wl_data_device_enter{} = pure ()
-  runEvent _ Event_wl_data_device_leave{} = pure ()
-  runEvent _ Event_wl_data_device_motion{} = pure ()
-  runEvent _ Event_wl_data_device_drop{} = pure ()
-  runEvent _ Event_wl_data_device_selection{} = pure ()
+  runRequest _ Request_wl_data_device_start_drag{} = pass
+  runRequest _ Request_wl_data_device_set_selection{} = pass
+  runRequest _ Request_wl_data_device_release{} = pass
+  runEvent _ Event_wl_data_device_data_offer{} = pass
+  runEvent _ Event_wl_data_device_enter{} = pass
+  runEvent _ Event_wl_data_device_leave{} = pass
+  runEvent _ Event_wl_data_device_motion{} = pass
+  runEvent _ Event_wl_data_device_drop{} = pass
+  runEvent _ Event_wl_data_device_selection{} = pass
 
 instance Interface' WL_data_device Server
 
@@ -558,9 +558,9 @@ instance Interface' WL_data_device Server
 instance Interface' WL_data_device_manager Client where
   type Event WL_data_device_manager = Event_wl_data_device_manager
   type Request WL_data_device_manager = Request_wl_data_device_manager
-  runRequest _ Request_wl_data_device_manager_create_data_source{} = pure ()
-  runRequest _ Request_wl_data_device_manager_get_data_device{} = pure ()
-  runRequest _ Request_wl_data_device_manager_release{} = pure ()
+  runRequest _ Request_wl_data_device_manager_create_data_source{} = pass
+  runRequest _ Request_wl_data_device_manager_get_data_device{} = pass
+  runRequest _ Request_wl_data_device_manager_release{} = pass
 
 instance Interface' WL_data_device_manager Server
 
@@ -570,7 +570,7 @@ instance Interface' WL_data_device_manager Server
 instance Interface' WL_shell Client where
   type Event WL_shell = Event_wl_shell
   type Request WL_shell = Request_wl_shell
-  runRequest _ Request_wl_shell_get_shell_surface{} = pure ()
+  runRequest _ Request_wl_shell_get_shell_surface{} = pass
 
 instance Interface' WL_shell Server
 
@@ -580,19 +580,19 @@ instance Interface' WL_shell Server
 instance Interface' WL_shell_surface Client where
   type Event WL_shell_surface = Event_wl_shell_surface
   type Request WL_shell_surface = Request_wl_shell_surface
-  runRequest _ Request_wl_shell_surface_pong{} = pure ()
-  runRequest _ Request_wl_shell_surface_move{} = pure ()
-  runRequest _ Request_wl_shell_surface_resize{} = pure ()
-  runRequest _ Request_wl_shell_surface_set_toplevel{} = pure ()
-  runRequest _ Request_wl_shell_surface_set_transient{} = pure ()
-  runRequest _ Request_wl_shell_surface_set_fullscreen{} = pure ()
-  runRequest _ Request_wl_shell_surface_set_popup{} = pure ()
-  runRequest _ Request_wl_shell_surface_set_maximized{} = pure ()
-  runRequest _ Request_wl_shell_surface_set_title{} = pure ()
-  runRequest _ Request_wl_shell_surface_set_class{} = pure ()
-  runEvent _ Event_wl_shell_surface_ping{} = pure ()
-  runEvent _ Event_wl_shell_surface_configure{} = pure ()
-  runEvent _ Event_wl_shell_surface_popup_done{} = pure ()
+  runRequest _ Request_wl_shell_surface_pong{} = pass
+  runRequest _ Request_wl_shell_surface_move{} = pass
+  runRequest _ Request_wl_shell_surface_resize{} = pass
+  runRequest _ Request_wl_shell_surface_set_toplevel{} = pass
+  runRequest _ Request_wl_shell_surface_set_transient{} = pass
+  runRequest _ Request_wl_shell_surface_set_fullscreen{} = pass
+  runRequest _ Request_wl_shell_surface_set_popup{} = pass
+  runRequest _ Request_wl_shell_surface_set_maximized{} = pass
+  runRequest _ Request_wl_shell_surface_set_title{} = pass
+  runRequest _ Request_wl_shell_surface_set_class{} = pass
+  runEvent _ Event_wl_shell_surface_ping{} = pass
+  runEvent _ Event_wl_shell_surface_configure{} = pass
+  runEvent _ Event_wl_shell_surface_popup_done{} = pass
 
 instance Interface' WL_shell_surface Server
 
@@ -602,25 +602,25 @@ instance Interface' WL_shell_surface Server
 instance Interface' WL_surface Client where
   type Event WL_surface = Event_wl_surface
   type Request WL_surface = Request_wl_surface
-  runRequest _ Request_wl_surface_destroy{} = pure ()
+  runRequest _ Request_wl_surface_destroy{} = pass
   runRequest surface request@Request_wl_surface_attach{buffer = bufferId, x, y} = do
     sendMessage' request surface.wlid (getOpcode request)
-  runRequest _ Request_wl_surface_damage{} = pure ()
-  runRequest _ Request_wl_surface_frame{} = pure ()
-  runRequest _ Request_wl_surface_set_opaque_region{} = pure ()
-  runRequest _ Request_wl_surface_set_input_region{} = pure ()
+  runRequest _ Request_wl_surface_damage{} = pass
+  runRequest _ Request_wl_surface_frame{} = pass
+  runRequest _ Request_wl_surface_set_opaque_region{} = pass
+  runRequest _ Request_wl_surface_set_input_region{} = pass
   runRequest surface request@Request_wl_surface_commit = do
     sendMessage' request surface.wlid (getOpcode request)
-  runRequest _ Request_wl_surface_set_buffer_transform{} = pure ()
-  runRequest _ Request_wl_surface_set_buffer_scale{} = pure ()
+  runRequest _ Request_wl_surface_set_buffer_transform{} = pass
+  runRequest _ Request_wl_surface_set_buffer_scale{} = pass
   runRequest surface request@Request_wl_surface_damage_buffer{} = do
     sendMessage' request surface.wlid (getOpcode request)
-  runRequest _ Request_wl_surface_offset{} = pure ()
-  runRequest _ Request_wl_surface_get_release{} = pure ()
-  runEvent _ Event_wl_surface_enter{} = pure ()
-  runEvent _ Event_wl_surface_leave{} = pure ()
-  runEvent _ Event_wl_surface_preferred_buffer_scale{} = pure ()
-  runEvent _ Event_wl_surface_preferred_buffer_transform{} = pure ()
+  runRequest _ Request_wl_surface_offset{} = pass
+  runRequest _ Request_wl_surface_get_release{} = pass
+  runEvent _ Event_wl_surface_enter{} = pass
+  runEvent _ Event_wl_surface_leave{} = pass
+  runEvent _ Event_wl_surface_preferred_buffer_scale{} = pass
+  runEvent _ Event_wl_surface_preferred_buffer_transform{} = pass
 
 instance Interface' WL_surface Server where
   type Event WL_surface = Event_wl_surface
@@ -651,12 +651,12 @@ instance Interface' WL_surface Server where
 instance Interface' WL_seat Client where
   type Event WL_seat = Event_wl_seat
   type Request WL_seat = Request_wl_seat
-  runRequest _ Request_wl_seat_get_pointer{} = pure ()
-  runRequest _ Request_wl_seat_get_keyboard{} = pure ()
-  runRequest _ Request_wl_seat_get_touch{} = pure ()
-  runRequest _ Request_wl_seat_release{} = pure ()
-  runEvent _ Event_wl_seat_capabilities{} = pure ()
-  runEvent _ Event_wl_seat_name{} = pure ()
+  runRequest _ Request_wl_seat_get_pointer{} = pass
+  runRequest _ Request_wl_seat_get_keyboard{} = pass
+  runRequest _ Request_wl_seat_get_touch{} = pass
+  runRequest _ Request_wl_seat_release{} = pass
+  runEvent _ Event_wl_seat_capabilities{} = pass
+  runEvent _ Event_wl_seat_name{} = pass
 
 instance Interface' WL_seat Server
 
@@ -666,19 +666,19 @@ instance Interface' WL_seat Server
 instance Interface' WL_pointer Client where
   type Event WL_pointer = Event_wl_pointer
   type Request WL_pointer = Request_wl_pointer
-  runRequest _ Request_wl_pointer_set_cursor{} = pure ()
-  runRequest _ Request_wl_pointer_release{} = pure ()
-  runEvent _ Event_wl_pointer_enter{} = pure ()
-  runEvent _ Event_wl_pointer_leave{} = pure ()
-  runEvent _ Event_wl_pointer_motion{} = pure ()
-  runEvent _ Event_wl_pointer_button{} = pure ()
-  runEvent _ Event_wl_pointer_axis{} = pure ()
-  runEvent _ Event_wl_pointer_frame{} = pure ()
-  runEvent _ Event_wl_pointer_axis_source{} = pure ()
-  runEvent _ Event_wl_pointer_axis_stop{} = pure ()
-  runEvent _ Event_wl_pointer_axis_discrete{} = pure ()
-  runEvent _ Event_wl_pointer_axis_value120{} = pure ()
-  runEvent _ Event_wl_pointer_axis_relative_direction{} = pure ()
+  runRequest _ Request_wl_pointer_set_cursor{} = pass
+  runRequest _ Request_wl_pointer_release{} = pass
+  runEvent _ Event_wl_pointer_enter{} = pass
+  runEvent _ Event_wl_pointer_leave{} = pass
+  runEvent _ Event_wl_pointer_motion{} = pass
+  runEvent _ Event_wl_pointer_button{} = pass
+  runEvent _ Event_wl_pointer_axis{} = pass
+  runEvent _ Event_wl_pointer_frame{} = pass
+  runEvent _ Event_wl_pointer_axis_source{} = pass
+  runEvent _ Event_wl_pointer_axis_stop{} = pass
+  runEvent _ Event_wl_pointer_axis_discrete{} = pass
+  runEvent _ Event_wl_pointer_axis_value120{} = pass
+  runEvent _ Event_wl_pointer_axis_relative_direction{} = pass
 
 instance Interface' WL_pointer Server
 
@@ -688,13 +688,13 @@ instance Interface' WL_pointer Server
 instance Interface' WL_keyboard Client where
   type Event WL_keyboard = Event_wl_keyboard
   type Request WL_keyboard = Request_wl_keyboard
-  runRequest _ Request_wl_keyboard_release{} = pure ()
-  runEvent _ Event_wl_keyboard_keymap{} = pure ()
-  runEvent _ Event_wl_keyboard_enter{} = pure ()
-  runEvent _ Event_wl_keyboard_leave{} = pure ()
-  runEvent _ Event_wl_keyboard_key{} = pure ()
-  runEvent _ Event_wl_keyboard_modifiers{} = pure ()
-  runEvent _ Event_wl_keyboard_repeat_info{} = pure ()
+  runRequest _ Request_wl_keyboard_release{} = pass
+  runEvent _ Event_wl_keyboard_keymap{} = pass
+  runEvent _ Event_wl_keyboard_enter{} = pass
+  runEvent _ Event_wl_keyboard_leave{} = pass
+  runEvent _ Event_wl_keyboard_key{} = pass
+  runEvent _ Event_wl_keyboard_modifiers{} = pass
+  runEvent _ Event_wl_keyboard_repeat_info{} = pass
 
 instance Interface' WL_keyboard Server
 
@@ -704,14 +704,14 @@ instance Interface' WL_keyboard Server
 instance Interface' WL_touch Client where
   type Event WL_touch = Event_wl_touch
   type Request WL_touch = Request_wl_touch
-  runRequest _ Request_wl_touch_release{} = pure ()
-  runEvent _ Event_wl_touch_down{} = pure ()
-  runEvent _ Event_wl_touch_up{} = pure ()
-  runEvent _ Event_wl_touch_motion{} = pure ()
-  runEvent _ Event_wl_touch_frame{} = pure ()
-  runEvent _ Event_wl_touch_cancel{} = pure ()
-  runEvent _ Event_wl_touch_shape{} = pure ()
-  runEvent _ Event_wl_touch_orientation{} = pure ()
+  runRequest _ Request_wl_touch_release{} = pass
+  runEvent _ Event_wl_touch_down{} = pass
+  runEvent _ Event_wl_touch_up{} = pass
+  runEvent _ Event_wl_touch_motion{} = pass
+  runEvent _ Event_wl_touch_frame{} = pass
+  runEvent _ Event_wl_touch_cancel{} = pass
+  runEvent _ Event_wl_touch_shape{} = pass
+  runEvent _ Event_wl_touch_orientation{} = pass
 
 instance Interface' WL_touch Server
 
@@ -721,13 +721,13 @@ instance Interface' WL_touch Server
 instance Interface' WL_output Client where
   type Event WL_output = Event_wl_output
   type Request WL_output = Request_wl_output
-  runRequest _ Request_wl_output_release{} = pure ()
-  runEvent _ Event_wl_output_geometry{} = pure ()
-  runEvent _ Event_wl_output_mode{} = pure ()
-  runEvent _ Event_wl_output_done{} = pure ()
-  runEvent _ Event_wl_output_scale{} = pure ()
-  runEvent _ Event_wl_output_name{} = pure ()
-  runEvent _ Event_wl_output_description{} = pure ()
+  runRequest _ Request_wl_output_release{} = pass
+  runEvent _ Event_wl_output_geometry{} = pass
+  runEvent _ Event_wl_output_mode{} = pass
+  runEvent _ Event_wl_output_done{} = pass
+  runEvent _ Event_wl_output_scale{} = pass
+  runEvent _ Event_wl_output_name{} = pass
+  runEvent _ Event_wl_output_description{} = pass
 
 instance Interface' WL_output Server
 
@@ -737,9 +737,9 @@ instance Interface' WL_output Server
 instance Interface' WL_region Client where
   type Event WL_region = Event_wl_region
   type Request WL_region = Request_wl_region
-  runRequest _ Request_wl_region_destroy{} = pure ()
-  runRequest _ Request_wl_region_add{} = pure ()
-  runRequest _ Request_wl_region_subtract{} = pure ()
+  runRequest _ Request_wl_region_destroy{} = pass
+  runRequest _ Request_wl_region_add{} = pass
+  runRequest _ Request_wl_region_subtract{} = pass
 
 instance Interface' WL_region Server
 
@@ -749,8 +749,8 @@ instance Interface' WL_region Server
 instance Interface' WL_subcompositor Client where
   type Event WL_subcompositor = Event_wl_subcompositor
   type Request WL_subcompositor = Request_wl_subcompositor
-  runRequest _ Request_wl_subcompositor_destroy{} = pure ()
-  runRequest _ Request_wl_subcompositor_get_subsurface{} = pure ()
+  runRequest _ Request_wl_subcompositor_destroy{} = pass
+  runRequest _ Request_wl_subcompositor_get_subsurface{} = pass
 
 instance Interface' WL_subcompositor Server
 
@@ -760,12 +760,12 @@ instance Interface' WL_subcompositor Server
 instance Interface' WL_subsurface Client where
   type Event WL_subsurface = Event_wl_subsurface
   type Request WL_subsurface = Request_wl_subsurface
-  runRequest _ Request_wl_subsurface_destroy{} = pure ()
-  runRequest _ Request_wl_subsurface_set_position{} = pure ()
-  runRequest _ Request_wl_subsurface_place_above{} = pure ()
-  runRequest _ Request_wl_subsurface_place_below{} = pure ()
-  runRequest _ Request_wl_subsurface_set_sync{} = pure ()
-  runRequest _ Request_wl_subsurface_set_desync{} = pure ()
+  runRequest _ Request_wl_subsurface_destroy{} = pass
+  runRequest _ Request_wl_subsurface_set_position{} = pass
+  runRequest _ Request_wl_subsurface_place_above{} = pass
+  runRequest _ Request_wl_subsurface_place_below{} = pass
+  runRequest _ Request_wl_subsurface_set_sync{} = pass
+  runRequest _ Request_wl_subsurface_set_desync{} = pass
 
 instance Interface' WL_subsurface Server
 
@@ -775,8 +775,8 @@ instance Interface' WL_subsurface Server
 instance Interface' WL_fixes Client where
   type Event WL_fixes = Event_wl_fixes
   type Request WL_fixes = Request_wl_fixes
-  runRequest _ Request_wl_fixes_destroy{} = pure ()
-  runRequest _ Request_wl_fixes_destroy_registry{} = pure ()
+  runRequest _ Request_wl_fixes_destroy{} = pass
+  runRequest _ Request_wl_fixes_destroy_registry{} = pass
 
 instance Interface' WL_fixes Server
 

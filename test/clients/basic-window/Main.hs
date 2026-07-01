@@ -86,7 +86,7 @@ program = do
   let
     makeSharedMemoryObject = shmOpen "wl_shm_pool" (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
     useSharedMemoryObject fileDescriptor =
-      flip runReaderT (ClientEnv env) $ do
+      usingReaderT (ClientEnv env) $ do
         bw <- liftIO $ readIORef bufferWidth
         bh <- liftIO $ readIORef bufferHeight
         let frameSize = bw * bh * colorChannels
@@ -112,7 +112,7 @@ program = do
         runRequest surface Request_wl_surface_attach{buffer = wlBufferId, x = 0, y = 0}
         runRequest surface Request_wl_surface_commit
         lastbuffer' <- newIORef buffer
-        modifyIORef env.eventHandlers $ (:) $ EventHandler $ \case
+        modifyIORef env.eventHandlers $ (:) $ EventHandler $ \_id -> \case
           (Event_xdg_toplevel_configure width height _) -> when (width > 0 && height > 0) $ do
             bw <- liftIO $ readIORef bufferWidth
             bh <- liftIO $ readIORef bufferHeight
@@ -144,7 +144,7 @@ program = do
             liftIO $ writeIORef bufferWidth width
             liftIO $ writeIORef bufferHeight height
           -- runRequest buffer Request_wl_buffer_destroy
-          _ -> pure ()
+          _ -> pass
         -- Wait for exit
         takeMVar running
 

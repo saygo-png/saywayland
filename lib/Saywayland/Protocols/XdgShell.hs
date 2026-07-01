@@ -88,13 +88,13 @@ instance Interface' XDG_positioner Client where
   type Event XDG_positioner = Event_xdg_positioner
   type Request XDG_positioner = Request_xdg_positioner
   runRequest _ _ = undefined
-  runEvent _ _ = pure ()
+  runEvent _ _ = pass
 
 instance Interface' XDG_positioner Server where
   type Event XDG_positioner = Event_xdg_positioner
   type Request XDG_positioner = Request_xdg_positioner
-  runRequest _ _ = pure ()
-  runEvent _ _ = pure ()
+  runRequest _ _ = pass
+  runEvent _ _ = pass
 
 instance Interface' XDG_surface Client where
   type Event XDG_surface = Event_xdg_surface
@@ -126,39 +126,39 @@ instance Interface' XDG_surface Client where
   runRequest xdg_surface request@Request_xdg_surface_ack_configure{} = do
     sendMessage' request xdg_surface.wlid (getOpcode request)
   runRequest _ _ = undefined
-  runEvent _ _ = pure ()
+  runEvent _ _ = pass
 
 instance Interface' XDG_surface Server where
   type Event XDG_surface = Event_xdg_surface
   type Request XDG_surface = Request_xdg_surface
   runRequest _ _ = undefined
-  runEvent _ _ = pure ()
+  runEvent _ _ = pass
 
 instance Interface' XDG_toplevel Client where
   type Event XDG_toplevel = Event_xdg_toplevel
   type Request XDG_toplevel = Request_xdg_toplevel
   runRequest _ _ = undefined
   runEvent _ Event_xdg_toplevel_configure{width, height, states} = do
-    pure ()
-  runEvent _ _ = pure ()
+    pass
+  runEvent _ _ = pass
 
 instance Interface' XDG_toplevel Server where
   type Event XDG_toplevel = Event_xdg_toplevel
   type Request XDG_toplevel = Request_xdg_toplevel
   runRequest _ _ = undefined
-  runEvent _ _ = pure ()
+  runEvent _ _ = pass
 
 instance Interface' XDG_popup Client where
   type Event XDG_popup = Event_xdg_popup
   type Request XDG_popup = Request_xdg_popup
   runRequest _ _ = undefined
-  runEvent _ _ = pure ()
+  runEvent _ _ = pass
 
 instance Interface' XDG_popup Server where
   type Event XDG_popup = Event_xdg_popup
   type Request XDG_popup = Request_xdg_popup
   runRequest _ _ = undefined
-  runEvent _ _ = pure ()
+  runEvent _ _ = pass
 
 -- }}}
 -- vim: foldmethod=marker

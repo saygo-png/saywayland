@@ -6,4 +6,4 @@ import Prelude
 
 main :: IO ()
 main = do
-  runQ (loadProtocols True "protocols") >>= writeFile "output.th.hs" . pprint
+  runQ (loadProtocols True "protocols") >>= writeFile "output.hs" . pprint

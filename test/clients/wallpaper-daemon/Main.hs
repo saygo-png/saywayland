@@ -18,6 +18,7 @@ import Saywayland.WaylandSocket
 import System.Posix (ownerReadMode, ownerWriteMode, setFdSize, unionFileModes)
 import System.Posix.IO
 import System.Posix.SharedMem
+import Control.Concurrent.STM (newTQueue)
 
 interfaceTable :: InterfaceClientTable
 interfaceTable = waylandInterfaceClientTable <> wlr_layer_shell_unstable_v1InterfaceClientTable
@@ -42,7 +43,8 @@ main = do
           handlers <- newIORef mempty
           interfaceTable' <- newIORef $ Map.fromList interfaceTable
           versionTable' <- newIORef $ Map.fromList versionTable
-          pure $ ClientEnv $ ClientEnvironment sock counter objects globals interfaceTable' versionTable' handlers
+          fdqueue <- atomically newTQueue
+          pure $ ClientEnv $ ClientEnvironment sock counter objects globals interfaceTable' versionTable' handlers fdqueue
         Nothing -> error "couldn't find `$WAYLAND_DISPLAY`, nor any open socket."
 
 program :: Wayland Client ()
@@ -73,10 +75,10 @@ program = do
   zwlrLayerShellV1Id <- fromJust <$> bindToInterface registry "zwlr_layer_shell_v1"
   zwlr_layer_shell_V1 <- fromJust <$> getInterface' @Zwlr_layer_shell_v1 zwlrLayerShellV1Id
 
-  modifyIORef env.eventHandlers $ (:) $ EventHandler $ \case
+  modifyIORef env.eventHandlers $ (:) $ EventHandler $ \_oid -> \case
     (Event_zwlr_layer_surface_v1_configure receivedSerial _ _) -> do
       atomically $ putTMVar serial receivedSerial
-    _ -> pure ()
+    _ -> pass
 
   wlSurfaceId <- newObjectId
   runRequest wl_compositor $ Request_wl_compositor_create_surface wlSurfaceId
@@ -101,7 +103,7 @@ program = do
 
   let makeSharedMemoryObject = shmOpen poolName (ShmOpenFlags True True False True) (Relude.foldl' unionFileModes ownerWriteMode [ownerReadMode])
       useSharedMemoryObject fileDescriptor =
-        flip runReaderT (ClientEnv env) $ do
+        usingReaderT (ClientEnv env) $ do
           let frameSize = bufferWidth * bufferHeight * colorChannels
           liftIO . setFdSize fileDescriptor $ fromIntegral frameSize
           wlShmPoolId <- newObjectId

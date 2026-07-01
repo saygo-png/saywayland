@@ -61,7 +61,7 @@ type role EventHandler nominal
 
 -- | EventHandlers, called whenever an event is received
 data EventHandler p where
-  EventHandler :: (Typeable e, WaylandEvent e) => (e -> Wayland p ()) -> EventHandler p
+  EventHandler :: (Typeable e, WaylandEvent e) => (ObjectID -> e -> Wayland p ()) -> EventHandler p
 
 -- | Wayland Environment
 type role WaylandEnv nominal

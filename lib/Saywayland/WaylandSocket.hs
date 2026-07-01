@@ -139,8 +139,7 @@ instance Dispatch Client where
         liftIO . traceIO . colorize Vivid Magenta $ showEvent oid event
         runEvent x event
         handlers <- liftIO $ readIORef env.eventHandlers
-        forM_ handlers $ \(EventHandler f) ->
-          for_ (cast event) f
+        forM_ handlers $ \(EventHandler f) -> for_ (cast event) $ f oid
 
 instance Dispatch Server where
   dispatchMessage x oid opcode msg = do
@@ -153,8 +152,7 @@ instance Dispatch Server where
         liftIO . traceIO . colorize Vivid Magenta $ showEvent oid event
         runRequest x event
         handlers <- liftIO $ readIORef env.eventHandlers
-        forM_ handlers $ \(EventHandler f) ->
-          for_ (cast event) f
+        forM_ handlers $ \(EventHandler f) -> for_ (cast event) $ f oid
 
 -- }}}
 
