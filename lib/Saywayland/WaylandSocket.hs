@@ -20,7 +20,7 @@ import System.Directory (doesFileExist)
 import System.Environment.Blank (getEnv)
 import System.FilePath
 import System.Posix (Fd (Fd))
-import Control.Concurrent.STM (writeTQueue, newTQueue)
+import Control.Concurrent.STM (writeTQueue, newTQueue, modifyTVar)
 import Control.Concurrent.Async (async)
 
 -- Listeners {{{
@@ -34,27 +34,23 @@ listenForClients env = do
   listenForClients env
 
 handleIncomingClient :: MonadIO m => ServerEnvironment -> Socket -> m ()
-handleIncomingClient env sock = do
-  serial <- liftIO $ newIORef 0
-  objectsref <- liftIO $ newIORef $ one (1, Interface WL_display{wlid = 1})
-  globalsref <- liftIO $ newIORef BM.empty
-  handlers <- newIORef []
+handleIncomingClient env socket' = do
+  counter <- liftIO $ newIORef 0
+  objects <- liftIO $ newIORef $ one (1, Interface WL_display{wlid = 1})
+  globals <- liftIO $ newIORef BM.empty
   fdQueue <- liftIO $ atomically newTQueue
-  let intref = env.interfaceTable
-  let verref = env.versionTable
-  let clientenv =
-        ClientServerEnv env $
-          ClientEnvironment
-            { socket = sock
-            , counter = serial
-            , objects = objectsref
-            , eventHandlers = handlers
-            , globals = globalsref
-            , interfaceTable = intref
-            , versionTable = verref
+  let clientenv = ClientEnvironment
+            { socket = socket'
+            , counter
+            , objects
+            , eventHandlers = env.eventHandlers
+            , globals
+            , interfaceTable = env.interfaceTable
+            , versionTable = env.versionTable
             , fdQueue
             }
-  void . liftIO . async $ runReaderT (clientLoop sock) clientenv
+  atomically . modifyTVar env.clients $ (clientenv:)
+  void . liftIO . async $ runReaderT (clientLoop socket') $ ClientServerEnv env clientenv
 
 getHeader :: Get (Word32, Word16, Word16)
 getHeader = (,,) <$> getWord32le <*> getWord16le <*> getWord16le

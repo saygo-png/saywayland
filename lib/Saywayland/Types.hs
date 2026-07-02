@@ -70,13 +70,18 @@ data WaylandEnv (p :: Perspective) where
   ClientServerEnv :: ServerEnvironment -> ClientEnvironment Server -> WaylandEnv 'Server
 
 data ServerEnvironment = ServerEnvironment
-  { socket :: Socket
-  -- ^ global server socket
+  { 
+  -- | global server socket
+    socket :: Socket
   , socketPath :: FilePath
-  , clients :: IORef (Map Int (ClientEnvironment Server))
-  -- ^ currently connected clients
+  -- | currently connected clients
+  , clients :: TVar [ClientEnvironment Server]
+  -- | table of interfaces supported by the server
   , interfaceTable :: IORef (Map String (IO (Interface Server)))
+  -- | table of versions of interfaces
   , versionTable :: IORef (Map String Word32)
+  -- | list of server-side event handlers
+  , eventHandlers:: IORef [EventHandler Server]
   }
 
 type role ClientEnvironment nominal
