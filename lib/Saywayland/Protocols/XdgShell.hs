@@ -84,10 +84,30 @@ instance Interface' XDG_wm_base Server where
   type Event XDG_wm_base = Event_xdg_wm_base
   type Request XDG_wm_base = Request_xdg_wm_base
 
+  runRequest _ Request_xdg_wm_base_create_positioner{id=positionerId} = void $ newObject positionerId XDG_positioner{wlid=positionerId}
+  runRequest wm_base Request_xdg_wm_base_destroy = do
+    ClientServerEnv _senv env <- ask
+    modifyIORef env.objects $ Map.delete wm_base.wlid
+  runRequest _ Request_xdg_wm_base_get_xdg_surface{id=xdgSurfaceId, surface=surfaceId} = do
+    getInterface' @WL_surface surfaceId >>= \case
+      Just _ -> do
+        ref <- newIORef Nothing
+        void $ newObject xdgSurfaceId XDG_surface{wlid=xdgSurfaceId, role = ref}
+      Nothing -> fail "get_xdg_surface called on a non-surface object."
+  runRequest _ Request_xdg_wm_base_pong{} = pass
+  runEvent wm_base event@Event_xdg_wm_base_ping{} = sendMessage' event wm_base.wlid $ getOpcode event
+
+
 instance Interface' XDG_positioner Client where
   type Event XDG_positioner = Event_xdg_positioner
   type Request XDG_positioner = Request_xdg_positioner
-  runRequest _ _ = undefined
+
+  runRequest positioner request@Request_xdg_positioner_destroy = do
+    ClientEnv env <- ask
+    modifyIORef env.objects $ Map.delete positioner.wlid
+    sendMessage' request positioner.wlid (getOpcode request)
+
+  runRequest _ _ = pass
   runEvent _ _ = pass
 
 instance Interface' XDG_positioner Server where
@@ -125,19 +145,41 @@ instance Interface' XDG_surface Client where
     sendMessage' request xdg_surface.wlid (getOpcode request)
   runRequest xdg_surface request@Request_xdg_surface_ack_configure{} = do
     sendMessage' request xdg_surface.wlid (getOpcode request)
-  runRequest _ _ = undefined
+  runRequest _ _ = pass
   runEvent _ _ = pass
 
 instance Interface' XDG_surface Server where
   type Event XDG_surface = Event_xdg_surface
   type Request XDG_surface = Request_xdg_surface
-  runRequest _ _ = undefined
+  runRequest xdg_surface Request_xdg_surface_destroy = do
+    ClientServerEnv _ env <- ask
+    role <- readIORef xdg_surface.role
+    case role of
+      Nothing -> delete
+      Just x -> do
+        let roleid = case x of
+                XDGToplevel XDG_toplevel{wlid} -> wlid
+                XDGPopup XDG_popup{wlid} -> wlid
+        keys <- Map.keys <$> readIORef env.objects
+        unless (roleid `elem` keys) delete
+    where
+      delete = do
+        ClientServerEnv _ env <- ask
+        modifyIORef env.objects $ Map.delete xdg_surface.wlid
+  runRequest xdg_surface Request_xdg_surface_get_toplevel{id=toplevelId} = do
+    toplevelObject <- newObject toplevelId XDG_toplevel{wlid=toplevelId}
+    writeIORef xdg_surface.role $ Just $ XDGToplevel toplevelObject
+  runRequest xdg_surface Request_xdg_surface_get_popup{id=popupId} = do
+    popupObject <- newObject popupId XDG_popup{wlid=popupId}
+    writeIORef xdg_surface.role $ Just $ XDGPopup popupObject
+  runRequest _ Request_xdg_surface_ack_configure{} = pass
+  runRequest _ _ = pass
   runEvent _ _ = pass
 
 instance Interface' XDG_toplevel Client where
   type Event XDG_toplevel = Event_xdg_toplevel
   type Request XDG_toplevel = Request_xdg_toplevel
-  runRequest _ _ = undefined
+  runRequest _ _ = pass
   runEvent _ Event_xdg_toplevel_configure{width, height, states} = do
     pass
   runEvent _ _ = pass
@@ -145,19 +187,19 @@ instance Interface' XDG_toplevel Client where
 instance Interface' XDG_toplevel Server where
   type Event XDG_toplevel = Event_xdg_toplevel
   type Request XDG_toplevel = Request_xdg_toplevel
-  runRequest _ _ = undefined
+  runRequest _ _ = pass
   runEvent _ _ = pass
 
 instance Interface' XDG_popup Client where
   type Event XDG_popup = Event_xdg_popup
   type Request XDG_popup = Request_xdg_popup
-  runRequest _ _ = undefined
+  runRequest _ _ = pass
   runEvent _ _ = pass
 
 instance Interface' XDG_popup Server where
   type Event XDG_popup = Event_xdg_popup
   type Request XDG_popup = Request_xdg_popup
-  runRequest _ _ = undefined
+  runRequest _ _ = pass
   runEvent _ _ = pass
 
 -- }}}

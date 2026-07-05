@@ -111,40 +111,6 @@ program = do
         liftIO $ hFlush fileHandle
         runRequest surface Request_wl_surface_attach{buffer = wlBufferId, x = 0, y = 0}
         runRequest surface Request_wl_surface_commit
-        lastbuffer' <- newIORef buffer
-        modifyIORef env.eventHandlers $ (:) $ EventHandler $ \_id -> \case
-          (Event_xdg_toplevel_configure width height _) -> when (width > 0 && height > 0) $ do
-            bw <- liftIO $ readIORef bufferWidth
-            bh <- liftIO $ readIORef bufferHeight
-            let frameSize = bw * bh * colorChannels
-            let newSize = width * height * colorChannels
-            when (newSize > frameSize) $ do
-              liftIO $ setFdSize fileDescriptor $ fromIntegral newSize
-              runRequest wl_shm_pool Request_wl_shm_pool_resize{size = newSize}
-            liftIO $ hSeek fileHandle AbsoluteSeek 0
-            liftIO $ hPut fileHandle $ image width height
-            liftIO $ hFlush fileHandle
-            newBufferId <- newObjectId
-            print newBufferId
-            runRequest wl_shm_pool
-              $ Request_wl_shm_pool_create_buffer
-                { id = newBufferId
-                , offset = 0
-                , width = width
-                , height = height
-                , stride = width * colorChannels
-                , format = Enum_wl_shm_format_argb8888
-                }
-            newbuffer <- fromJust <$> getInterface' @WL_buffer newBufferId
-            runRequest surface Request_wl_surface_attach{buffer = newBufferId, x = 0, y = 0}
-            runRequest surface Request_wl_surface_commit
-            lastbuffer <- readIORef lastbuffer'
-            runRequest lastbuffer Request_wl_buffer_destroy
-            writeIORef lastbuffer' newbuffer
-            liftIO $ writeIORef bufferWidth width
-            liftIO $ writeIORef bufferHeight height
-          -- runRequest buffer Request_wl_buffer_destroy
-          _ -> pass
         -- Wait for exit
         takeMVar running
 
