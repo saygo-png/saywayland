@@ -27,10 +27,11 @@ main = bracket env cleanup program
           bind socket' (SockAddrUnix socketPath)
           listen socket' 5
 
-          clients <- newTVarIO []
+          clients <- newTVarIO Map.empty
           interfaceTable <- newIORef $ Map.fromList waylandInterfaceServerTable
           versionTable <- newIORef $ Map.fromList waylandVersionTable
           eventHandlers <- newIORef []
+          clientSerial <- newTVarIO 0
           pure ServerEnvironment
                 { socket = socket'
                 , socketPath
@@ -38,6 +39,7 @@ main = bracket env cleanup program
                 , interfaceTable
                 , versionTable
                 , eventHandlers
+                , clientSerial
                 }
 
 program :: MonadIO m => ServerEnvironment -> m ()

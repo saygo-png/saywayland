@@ -49,7 +49,10 @@ handleIncomingClient env socket' = do
             , versionTable = env.versionTable
             , fdQueue
             }
-  atomically . modifyTVar env.clients $ (clientenv:)
+  serial' <- atomically $ do
+    modifyTVar env.clientSerial (+ 1)
+    readTVar env.clientSerial
+  atomically . modifyTVar env.clients $ Map.insert serial' clientenv
   void . liftIO . async $ runReaderT (clientLoop socket') $ ClientServerEnv env clientenv
 
 getHeader :: Get (Word32, Word16, Word16)
