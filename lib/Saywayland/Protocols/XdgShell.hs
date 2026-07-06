@@ -25,7 +25,7 @@ data XDG_wm_base = XDG_wm_base {wlid :: Word32}
 
 data XDG_positioner = XDG_positioner {wlid :: Word32}
 
-data XDG_surface = XDG_surface {wlid :: Word32, role :: IORef (Maybe XDGRole)}
+data XDG_surface = XDG_surface {wlid :: Word32, wl_surface :: ObjectID, role :: IORef (Maybe XDGRole)}
 
 data XDG_toplevel = XDG_toplevel {wlid :: Word32}
 
@@ -37,7 +37,7 @@ instance DefaultIO XDG_wm_base where defM = pure $ XDG_wm_base 0
 
 instance DefaultIO XDG_positioner where defM = pure $ XDG_positioner 0
 
-instance DefaultIO XDG_surface where defM = newIORef Nothing <&> XDG_surface 0
+instance DefaultIO XDG_surface where defM = newIORef Nothing <&> XDG_surface 0 0
 
 instance DefaultIO XDG_toplevel where defM = pure $ XDG_toplevel 0
 
@@ -72,7 +72,7 @@ instance Interface' XDG_wm_base Client where
       Just _ -> do
         -- TODO there are 3 checks to be made beforehand.
         ref <- newIORef Nothing
-        _surfaceObject <- newObject xdgSurfaceId XDG_surface{wlid=xdgSurfaceId, role = ref}
+        _surfaceObject <- newObject xdgSurfaceId XDG_surface{wlid=xdgSurfaceId, wl_surface=surfaceId, role = ref}
         sendMessage' request wm_base.wlid (getOpcode request)
       Nothing -> do
         error "get_xdg_surface called on a non-surface object."
