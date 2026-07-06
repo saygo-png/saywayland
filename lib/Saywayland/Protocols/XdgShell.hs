@@ -92,8 +92,8 @@ instance Interface' XDG_wm_base Server where
     getInterface' @WL_surface surfaceId >>= \case
       Just _ -> do
         ref <- newIORef Nothing
-        void $ newObject xdgSurfaceId XDG_surface{wlid=xdgSurfaceId, role = ref}
-      Nothing -> fail "get_xdg_surface called on a non-surface object."
+        void $ newObject xdgSurfaceId XDG_surface{wlid=xdgSurfaceId, role = ref,wl_surface=surfaceId}
+      Nothing -> error "get_xdg_surface called on a non-surface object."
   runRequest _ Request_xdg_wm_base_pong{} = pass
   runEvent wm_base event@Event_xdg_wm_base_ping{} = sendMessage' event wm_base.wlid $ getOpcode event
 
