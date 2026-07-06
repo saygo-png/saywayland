@@ -57,12 +57,13 @@ data WL_shm = WL_shm {wlid :: Word32, formats :: IORef [Enum_wl_shm_format]}
 makeFieldsId ''WL_shm
 
 data WL_buffer = WL_buffer
-  { wlid :: Word32
-  , offset :: Int
-  , width :: Int
-  , height :: Int
-  , stride :: Int
-  , format :: Enum_wl_shm_format
+  { wlid    :: Word32
+  , offset  :: Int
+  , width   :: Int
+  , height  :: Int
+  , stride  :: Int
+  , pool    :: Maybe ObjectID
+  , format  :: Enum_wl_shm_format
   }
 
 makeFieldsId ''WL_buffer
@@ -151,7 +152,7 @@ instance DefaultIO WL_registry where
   defM = pure WL_registry{wlid = 0}
 
 instance DefaultIO WL_buffer where
-  defM = pure WL_buffer{wlid = 0, offset = 0, width = 0, height = 0, stride = 0, format = Enum_wl_shm_format_argb8888}
+  defM = pure WL_buffer{wlid = 0, offset = 0, width = 0, height = 0, stride = 0, format = Enum_wl_shm_format_argb8888,pool=Nothing}
 
 instance DefaultIO WL_region where
   defM = pure WL_region{wlid = 0}
@@ -389,7 +390,7 @@ instance Interface' WL_shm_pool Client where
 
   runRequest shm_pool request@Request_wl_shm_pool_create_buffer{id = bufId, offset = offset', width = width', height = height', stride = stride', format = format'} = do
     ClientEnv env <- ask
-    let buffer = WL_buffer{wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = format'}
+    let buffer = WL_buffer{wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = format', pool=Just shm_pool.wlid}
     modifyIORef env.objects $ Map.insert bufId $ Interface buffer
     sendMessage' request shm_pool.wlid (getOpcode request)
   runRequest shm_pool request@Request_wl_shm_pool_destroy = do
@@ -406,9 +407,9 @@ instance Interface' WL_shm_pool Server where
   type Event WL_shm_pool = Event_wl_shm_pool
   type Request WL_shm_pool = Request_wl_shm_pool
 
-  runRequest _shm_pool Request_wl_shm_pool_create_buffer{id = bufId, offset = offset', width = width', height = height', stride = stride', format = format'} = do
+  runRequest shm_pool Request_wl_shm_pool_create_buffer{id = bufId, offset = offset', width = width', height = height', stride = stride', format = format'} = do
     ClientServerEnv _ env <- ask
-    let buffer = WL_buffer{wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = format'}
+    let buffer = WL_buffer{wlid = bufId, offset = offset', width = width', height = height', stride = stride', format = format', pool=Just shm_pool.wlid}
     modifyIORef env.objects $ Map.insert bufId $ Interface buffer
   runRequest shm_pool Request_wl_shm_pool_destroy = do
     ClientServerEnv _ env <- ask
