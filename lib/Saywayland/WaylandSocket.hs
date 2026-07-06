@@ -88,7 +88,8 @@ clientLoop' bytes' sock = do
   bool
     ( case extractMessage bytes of
         Just (oid, opcode, x, y) -> do
-          void $ ask >>= liftIO . async . runReaderT (handleMessage oid opcode x)
+          --void $ ask >>= liftIO . async . runReaderT (handleMessage oid opcode x)
+          handleMessage oid opcode x
           clientLoop' y sock
         Nothing -> error "impossible/undefined edge case"
     )
