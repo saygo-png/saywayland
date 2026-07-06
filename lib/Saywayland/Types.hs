@@ -218,27 +218,27 @@ getColorize = do
       then \ci c t -> fromString (setSGRCode [SetColor Foreground ci c]) <> t <> fromString (setSGRCode [Reset])
       else const $ const id
 
+getClientEnv :: Wayland p (ClientEnvironment p)
+getClientEnv = ask <&> \case
+  ClientEnv env -> env
+  ClientServerEnv _ env -> env
 -- | helper function for getting an object from a global
 interfaceFromName :: Word32 -> Wayland p (Maybe BS.ByteString)
-interfaceFromName n =
-  ask >>= \case
-    ClientEnv env -> do
-      glob <- readIORef env.globals
-      pure $ BM.lookupR n glob
-    ClientServerEnv _ env -> do
-      glob <- readIORef env.globals
-      pure $ BM.lookupR n glob
+interfaceFromName n = do
+  env <- getClientEnv
+  glob <- readIORef env.globals
+  pure $ BM.lookupR n glob
 
 -- | get an Interface from objects table using its Id.
 getInterface :: Word32 -> Wayland p (Maybe (Interface p))
 getInterface objectID = do
-  ClientEnv env <- ask
+  env <- getClientEnv
   Map.lookup objectID <$> readIORef env.objects
 
 -- | getInterface chained with proxyInterface.
 getInterface' :: forall i p. (Typeable i) => Word32 -> Wayland p (Maybe i)
 getInterface' objectID = do
-  ClientEnv env <- ask
+  env <- getClientEnv
   (proxyInterface <=< Map.lookup objectID) <$> readIORef env.objects
 
 -- | Round a byte length up to the nearest 4-byte boundary.
