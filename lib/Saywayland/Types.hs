@@ -97,7 +97,7 @@ data ClientEnvironment (p :: Perspective) = ClientEnvironment
   , versionTable :: IORef (Map String Word32)
   , eventHandlers :: IORef [EventHandler p]
   , fdQueue :: TQueue Fd
-  }
+  } deriving stock Eq
 
 class
   ( WaylandEvent (Event a)
